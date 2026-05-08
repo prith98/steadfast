@@ -79,7 +79,7 @@ This is the central methodological commitment of Steadfast.
 
 In:
 
-- 4 dimensions, ~10 of the 14 sub-metrics
+- 4 dimensions, all 14 sub-metrics
 - 50+ tasks across 3 domains: customer support, code repair, multi-hop research
 - 2 framework adapters: OpenAI Agents SDK, LangGraph
 - 5 model integrations: Claude Opus 4.5, GPT-5.2, Gemini 3 Pro, Llama-4, Mistral Large

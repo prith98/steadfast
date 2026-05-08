@@ -57,7 +57,7 @@ Latest results across frontier models: [steadfast.dev/leaderboard](https://stead
 
 ## What's in v0.1
 
-- ✅ 4 dimensions, 10 sub-metrics
+- ✅ 4 dimensions, 14 sub-metrics
 - ✅ 50+ tasks across customer support, code repair, multi-hop research
 - ✅ Adapters for OpenAI Agents SDK and LangGraph
 - ✅ Reference results for Claude Opus 4.5, GPT-5.2, Gemini 3 Pro, Llama-4, Mistral Large
