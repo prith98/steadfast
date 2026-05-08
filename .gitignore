@@ -33,6 +33,9 @@ runs/
 .env.local
 .envrc
 
+# Personal notes / session scratch (durable context lives in auto-memory)
+notes/
+
 # IDE / OS
 .vscode/
 .idea/
