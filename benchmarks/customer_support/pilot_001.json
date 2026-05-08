@@ -1,0 +1,15 @@
+{
+  "id": "pilot_001",
+  "domain": "customer_support",
+  "input": "A customer asks: 'What is the return window for unopened items at our store?' The store policy is a 30-day return window for unopened items. Answer the customer's question concisely.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "30 days"
+  },
+  "judge": "exact_match",
+  "metadata": {
+    "difficulty": "trivial",
+    "version": "v1",
+    "purpose": "harness-end-to-end-pilot"
+  }
+}
