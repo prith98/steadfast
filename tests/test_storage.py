@@ -10,10 +10,6 @@ import pytest
 from steadfast.storage.sqlite import CheckpointStore
 
 
-def _async_run(coro: object) -> object:
-    return asyncio.get_event_loop().run_until_complete(coro)  # type: ignore[arg-type]
-
-
 @pytest.fixture
 def store(tmp_path: Path) -> CheckpointStore:
     s = CheckpointStore(tmp_path / "test.sqlite")

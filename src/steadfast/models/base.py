@@ -83,7 +83,9 @@ class BaseModelClient(ABC):
     """
 
     def __init__(self, *, max_concurrent: int = 5, max_retries: int = 5) -> None:
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        # Internal — callers must not bypass the achat contract by acquiring
+        # the semaphore directly.
+        self._semaphore = asyncio.Semaphore(max_concurrent)
         self.max_retries = max_retries
 
     @classmethod
@@ -111,8 +113,14 @@ class BaseModelClient(ABC):
         model: str,
         **kwargs: Any,
     ) -> ChatResponse:
+        # Retry pattern: tenacity AsyncRetrying with provider-aware exception
+        # classification via the ``_is_retryable`` classmethod. Backoff is
+        # exponential with a 30-second cap, derived from the standard
+        # retry-with-jitter recommendation for cloud APIs (AWS Architecture
+        # Blog, "Exponential Backoff And Jitter", 2015 — and the tenacity
+        # docs at https://tenacity.readthedocs.io).
         retryable = type(self)._is_retryable
-        async with self.semaphore:
+        async with self._semaphore:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self.max_retries),
                 wait=wait_exponential(multiplier=1, min=1, max=30),

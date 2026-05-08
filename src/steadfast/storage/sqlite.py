@@ -13,6 +13,7 @@ or ``in_flight``; ``completed`` reps are preserved.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,22 +68,31 @@ class CheckpointStore:
     """aiosqlite-backed persistence for runs and per-rep status.
 
     Use :meth:`init` once before the first read/write to create the schema.
-    The store opens a fresh connection per operation; for benchmark runs
-    with many reps this adds overhead but keeps the API trivially safe under
-    asyncio concurrency without a connection pool.
+    The store opens a fresh connection per operation; an internal
+    ``asyncio.Lock`` serializes writes so concurrent ``asyncio.gather`` fanout
+    in the runner cannot trigger SQLite's "database is locked" error. Reads
+    are not lock-protected (SQLite handles concurrent readers natively).
     """
 
     def __init__(self, path: str | Path) -> None:
         # Accept ":memory:" for in-process testing or a filesystem path.
         self.path = str(path)
+        # Lazy-bound to whichever event loop first acquires it.
+        self._write_lock = asyncio.Lock()
 
     async def init(self) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._write_lock, aiosqlite.connect(self.path) as db:
+            # WAL mode permits concurrent readers + a single writer and is
+            # persistent (set once, applies to the database file).
+            # busy_timeout is per-connection; we set it on every open below.
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA busy_timeout=5000")
             await db.executescript(_SCHEMA)
             await db.commit()
 
     async def upsert_run(self, *, run_id: str, manifest_json: str, started_at: str) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._write_lock, aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             await db.execute(
                 """
                 INSERT INTO runs (run_id, manifest_json, started_at)
@@ -107,7 +117,8 @@ class CheckpointStore:
         completed_at: str | None,
         cost_usd: str,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._write_lock, aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA busy_timeout=5000")
             await db.execute(
                 """
                 INSERT INTO reps (

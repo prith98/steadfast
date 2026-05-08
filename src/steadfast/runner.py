@@ -68,6 +68,20 @@ class RunResult(BaseModel):
     package_version: str = __version__
 
 
+def _canonical_task_hash(task: Task) -> str:
+    """Stable SHA-256 hash of a task's content.
+
+    Uses ``json.dumps(model_dump(mode='json'), sort_keys=True)`` rather than
+    ``model_dump_json()`` because Pydantic's JSON output is field-declaration-
+    ordered, which is stable within a Pydantic version but not contractually
+    stable across minor versions. Sorted keys remove that fragility — the
+    deterministic ``run_id`` (ADR-0002 §D.2) depends on this stability for
+    resumption to work across upgrades.
+    """
+    payload = json.dumps(task.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def compute_run_id(
     *,
     task: Task,
@@ -75,21 +89,25 @@ def compute_run_id(
     model: str,
     reps: int,
     package_version: str,
+    seed: int = 0,
 ) -> str:
     """Deterministic 16-hex-char run identifier.
 
     Identical inputs produce identical IDs, which is how the runner detects
     a resumable prior run. The full task content (not just ``task.id``) is
-    hashed so editing a task's text invalidates the cached run.
+    hashed so editing a task's text invalidates the cached run. ``seed`` is
+    included so that future seed-driven stochasticity (paraphrase generation,
+    perturbation sampling) participates in the identity per
+    ``docs/METHODOLOGY.md`` §"Reproducibility".
     """
-    canonical_task = task.model_dump_json()
     inputs = {
         "task_id": task.id,
-        "task_content_sha256": hashlib.sha256(canonical_task.encode()).hexdigest(),
+        "task_content_sha256": _canonical_task_hash(task),
         "agent_class": agent_class,
         "model": model,
         "reps": reps,
         "package_version": package_version,
+        "seed": seed,
     }
     canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
@@ -122,18 +140,26 @@ async def run_task(
     reps: int,
     model: str,
     checkpoint_path: str | Path,
+    seed: int = 0,
 ) -> RunResult:
     """Execute ``task`` ``reps`` times against ``agent``, persisting checkpoints.
 
     Resumes any prior incomplete run with the same ``run_id`` automatically.
     Returns a :class:`RunResult` with one :class:`RepRecord` per rep_idx.
+
+    ``seed`` is reserved for downstream stochasticity (paraphrase generation,
+    perturbation sampling). Tuesday's runner does not yet consume it; it is
+    threaded through the manifest and ``run_id`` so future weeks can populate
+    it without breaking the resumption contract.
     """
+    task_hash = _canonical_task_hash(task)
     run_id = compute_run_id(
         task=task,
         agent_class=agent.__class__.__name__,
         model=model,
         reps=reps,
         package_version=__version__,
+        seed=seed,
     )
 
     store = CheckpointStore(checkpoint_path)
@@ -142,11 +168,12 @@ async def run_task(
     manifest = {
         "run_id": run_id,
         "task_id": task.id,
-        "task_content_sha256": hashlib.sha256(task.model_dump_json().encode()).hexdigest(),
+        "task_content_sha256": task_hash,
         "agent_class": agent.__class__.__name__,
         "model": model,
         "reps": reps,
         "package_version": __version__,
+        "seed": seed,
     }
     await store.upsert_run(
         run_id=run_id,
@@ -218,7 +245,19 @@ async def run_task(
         )
 
     if pending_indices:
-        await asyncio.gather(*(execute_rep(i) for i in pending_indices))
+        # return_exceptions=True so an infrastructure error in one rep does
+        # not cancel sibling reps mid-flight (which would lose their
+        # checkpoint state). Per-rep agent exceptions are handled inside
+        # execute_rep already; anything reaching this point is an unexpected
+        # failure of the persistence layer or the runner itself.
+        results = await asyncio.gather(
+            *(execute_rep(i) for i in pending_indices), return_exceptions=True
+        )
+        infra_errors = [r for r in results if isinstance(r, BaseException)]
+        if infra_errors:
+            # Re-raise the first to surface the failure; sibling reps that
+            # completed are already persisted in the store.
+            raise infra_errors[0]
 
     final_rows = sorted(
         (r for r in await store.list_reps_for_run(run_id) if r.task_id == task.id),

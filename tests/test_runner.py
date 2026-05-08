@@ -35,7 +35,11 @@ class _CountingAgent(Agent):
 class _AlwaysFailAgent(Agent):
     """Always raises so we can exercise the FAILED path."""
 
+    def __init__(self) -> None:
+        self.call_count = 0
+
     async def arun(self, task: Task) -> AgentResponse:
+        self.call_count += 1
         raise RuntimeError("simulated failure")
 
 
@@ -181,9 +185,9 @@ def test_run_task_records_failed_on_agent_exception(tmp_path: Path) -> None:
 
 
 def test_run_task_does_not_retry_failed(tmp_path: Path) -> None:
-    """Per Q2 (Tuesday design): failed reps are not auto-retried in the same run.
+    """Per ADR-0002 §D.1: failed reps are not auto-retried in the same run.
 
-    Resuming the run after a partial failure should NOT re-execute already-failed
+    Resuming the run after a partial failure must NOT re-execute already-failed
     reps. (A future ``--retry-failed`` flag would explicitly opt into that.)
     """
     agent = _AlwaysFailAgent()
@@ -197,9 +201,10 @@ def test_run_task_does_not_retry_failed(tmp_path: Path) -> None:
             checkpoint_path=ckpt,
         )
     )
-    first_calls = 2  # one per rep
+    assert agent.call_count == 2  # initial run executed both reps once each
+
     second_agent = _AlwaysFailAgent()
-    asyncio.run(
+    result = asyncio.run(
         run_task(
             agent=second_agent,
             task=_TASK,
@@ -208,8 +213,10 @@ def test_run_task_does_not_retry_failed(tmp_path: Path) -> None:
             checkpoint_path=ckpt,
         )
     )
-    # Second run shouldn't have called the (new) agent at all
-    assert first_calls == 2
+    # The resumed run must not have re-invoked the agent on already-FAILED reps.
+    assert second_agent.call_count == 0
+    # All reps should still be in FAILED state with the original error.
+    assert {r.status for r in result.reps} == {RepStatus.FAILED}
 
 
 # ---------------------------------------------------------------------------

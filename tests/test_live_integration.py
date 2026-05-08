@@ -11,6 +11,7 @@ Each test skips automatically if its required API key is not set.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -40,8 +41,6 @@ def test_anthropic_pilot_three_reps_end_to_end(tmp_path: Path) -> None:
     task = Task.model_validate_json(PILOT_PATH.read_text())
     client = AnthropicClient()
     agent = SimplePromptingAgent(client=client, model="claude-haiku-4-5-20251001")
-
-    import asyncio
 
     result = asyncio.run(
         run_task(
@@ -82,8 +81,6 @@ def test_openai_pilot_three_reps_end_to_end(tmp_path: Path) -> None:
     client = OpenAIClient()
     agent = SimplePromptingAgent(client=client, model="gpt-5-mini")
 
-    import asyncio
-
     result = asyncio.run(
         run_task(
             agent=agent,
@@ -112,8 +109,6 @@ def test_google_pilot_three_reps_end_to_end(tmp_path: Path) -> None:
     task = Task.model_validate_json(PILOT_PATH.read_text())
     client = GoogleClient()
     agent = SimplePromptingAgent(client=client, model="gemini-2.5-flash")
-
-    import asyncio
 
     result = asyncio.run(
         run_task(

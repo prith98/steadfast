@@ -93,11 +93,16 @@ class GoogleClient(BaseModelClient):
         if hasattr(response, "model_dump"):
             raw_payload = response.model_dump()
 
+        # Prefer the canonical model identifier the API echoes back (e.g.,
+        # the dated alias resolution); fall back to the requested ID if the
+        # SDK doesn't expose one. Aligns with AnthropicClient/OpenAIClient.
+        api_model = getattr(response, "model_version", None) or model
+
         return ChatResponse(
             text=text,
             usage=usage,
             cost_usd=cost,
-            model=model,
+            model=api_model,
             finish_reason=finish_reason,
             raw=raw_payload,
         )

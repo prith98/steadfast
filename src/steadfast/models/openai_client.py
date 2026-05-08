@@ -60,9 +60,17 @@ class OpenAIClient(BaseModelClient):
 
         choice = response.choices[0]
         text = choice.message.content or ""
+        if response.usage is None:
+            # Silent zero-cost fallback would corrupt manifest cost accounting.
+            # In non-streaming chat completions the API always returns usage;
+            # if it ever doesn't, fail loudly per ADR-0002 §C.3.
+            raise RuntimeError(
+                "OpenAI response missing 'usage' field — cannot compute cost. "
+                "If streaming, set stream_options={'include_usage': True}."
+            )
         usage = TokenUsage(
-            input_tokens=response.usage.prompt_tokens if response.usage else 0,
-            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
         )
         cost = compute_cost(model, usage)
 
