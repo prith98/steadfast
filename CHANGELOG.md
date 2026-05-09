@@ -49,6 +49,31 @@ here.
   logic, agent passes the `logprobs` kwarg through, and round-tripping of
   the new `AgentResponse` / `Task` fields.
 
+- **Calibration dimension** (`docs/adr/0005-calibration-and-confidence.md`
+  §D-E): four measurement functions in `metrics/calibration.py` —
+  Brier (pooled-bootstrap squared errors with parallel verbalized +
+  logprob columns), ECE (15 equal-mass bins per Nixon et al. 2019, with
+  the `floor(N/3)` small-N fallback documented in METHODOLOGY §3.3),
+  refusal calibration (2x2 confusion matrix on `(task.difficulty,
+  response.refused)` with Wilson cell CIs and sensitivity / specificity
+  scalars), and overconfidence rate (Wilson 95% CI on
+  `count(incorrect ∧ confidence ≥ 0.9) / count(answered)`).
+  All four return frozen Pydantic result models; `measure_calibration`
+  bundles them into a single `CalibrationDimension` for HTML report
+  consumption.
+- **`stats/calibration.py`** math primitives: `brier_squared_errors`,
+  `brier_score`, `equal_mass_bin_indices`, `expected_calibration_error`.
+  Cited Brier (1950), Guo et al. (2017), Nixon et al. (2019). Hand-
+  verified test values for both Brier (perfect / worst / uniform-half /
+  three-point hand-computed) and ECE (perfect-calibration-by-construction,
+  total-miscalibration, two-bin closed-form `2/15`).
+- 43 new tests covering Brier perfect / worst-case / uniform-half /
+  filter-refused-and-none, ECE default-15-bins / fallback / too-small /
+  perfect-by-construction, refusal calibration perfect / worst / one-row-
+  empty, overconfidence threshold-inclusivity / refused-excluded /
+  invalid-threshold, end-to-end `measure_calibration` bundling, and
+  `reps_from_run_results` filtering.
+
 ### Resolved methodology questions
 
 - **Q3 (Anthropic logprob)** — closed by ADR-0005 §A.
