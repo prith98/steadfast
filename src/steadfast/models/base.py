@@ -2,13 +2,20 @@
 
 The base class owns retry, the per-provider semaphore, and the public
 :meth:`achat` / :meth:`acomplete` surface. Provider subclasses implement
-:meth:`_achat_provider` and override :meth:`_is_retryable` to declare which
-exceptions are transient.
+:meth:`_achat_provider` and override :meth:`_is_retryable` (which
+exceptions are transient) and :data:`PROVIDER_NAME` (the canonical
+``gen_ai.provider.name`` value for the provider).
 
 Per Q1 from the Tuesday design (``docs/adr/0002-v01-core-abstractions.md``),
 the ``raw: dict[str, Any]`` field on :class:`ChatResponse` is the only place
 the public surface uses ``Any``. It carries provider-specific debug data and
 is not part of the typed contract.
+
+Per ADR-0003 §A.3, every public :meth:`achat` call emits exactly one
+``chat`` span; retries become ``span.add_event("retry", ...)`` events. The
+retry contract (ADR-0002 §B.1, §B.2) is unchanged — tracing is purely
+observability. If tracing is not configured, the OTel API returns no-op
+spans and the call sites still work.
 """
 
 from __future__ import annotations
@@ -17,15 +24,18 @@ import asyncio
 from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
     AsyncRetrying,
+    RetryCallState,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
+
+from steadfast.tracing import chat_span, record_chat_response, record_retry_event
 
 
 class ChatMessage(BaseModel):
@@ -77,10 +87,19 @@ class ChatResponse(BaseModel):
 class BaseModelClient(ABC):
     """Async LLM client base class.
 
-    Subclasses implement :meth:`_achat_provider` and may override
-    :meth:`_is_retryable`. The base class wraps ``_achat_provider`` with a
-    tenacity retry layer and a per-instance semaphore.
+    Subclasses implement :meth:`_achat_provider`, override
+    :meth:`_is_retryable`, and set :data:`PROVIDER_NAME` to their canonical
+    OTel ``gen_ai.provider.name`` value. The base class wraps
+    ``_achat_provider`` with a tenacity retry layer, a per-instance
+    semaphore, and a single ``chat`` span per public call.
     """
+
+    # Canonical gen_ai.provider.name — see the OTel registry at
+    # https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/.
+    # Default is intentionally "unknown" so a subclass that forgets to set
+    # it shows up as such in trace tooling, surfacing the bug without
+    # raising at import time.
+    PROVIDER_NAME: ClassVar[str] = "unknown"
 
     def __init__(self, *, max_concurrent: int = 5, max_retries: int = 5) -> None:
         # Internal — callers must not bypass the achat contract by acquiring
@@ -120,15 +139,45 @@ class BaseModelClient(ABC):
         # Blog, "Exponential Backoff And Jitter", 2015 — and the tenacity
         # docs at https://tenacity.readthedocs.io).
         retryable = type(self)._is_retryable
+        provider_name = type(self).PROVIDER_NAME
+
+        # Pull request-shape attributes out of kwargs for the span. We
+        # accept all three providers' max-tokens spellings — the right one
+        # for this provider is already in kwargs and the others won't be.
+        request_max_tokens = _coerce_int(
+            kwargs.get("max_tokens")
+            or kwargs.get("max_completion_tokens")
+            or kwargs.get("max_output_tokens")
+        )
+        request_temperature = _coerce_float(kwargs.get("temperature"))
+        request_top_p = _coerce_float(kwargs.get("top_p"))
+
         async with self._semaphore:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=1, min=1, max=30),
-                retry=retry_if_exception(retryable),
-                reraise=True,
-            ):
-                with attempt:
-                    return await self._achat_provider(messages, model=model, **kwargs)
+            with chat_span(
+                provider=provider_name,
+                model=model,
+                max_tokens=request_max_tokens,
+                temperature=request_temperature,
+                top_p=request_top_p,
+            ) as span:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(self.max_retries),
+                    wait=wait_exponential(multiplier=1, min=1, max=30),
+                    retry=retry_if_exception(retryable),
+                    reraise=True,
+                    before_sleep=_make_before_sleep(span),
+                ):
+                    with attempt:
+                        response = await self._achat_provider(messages, model=model, **kwargs)
+                        record_chat_response(
+                            span,
+                            response_model=response.model,
+                            input_tokens=response.usage.input_tokens,
+                            output_tokens=response.usage.output_tokens,
+                            finish_reason=response.finish_reason,
+                            cost_usd=response.cost_usd,
+                        )
+                        return response
         raise RuntimeError("unreachable: AsyncRetrying with reraise=True returns or raises")
 
     async def acomplete(
@@ -139,3 +188,43 @@ class BaseModelClient(ABC):
         **kwargs: Any,
     ) -> ChatResponse:
         return await self.achat([ChatMessage(role="user", content=prompt)], model=model, **kwargs)
+
+
+def _make_before_sleep(span: Any) -> Any:
+    """Build a tenacity ``before_sleep`` callback that records retry events.
+
+    ``before_sleep`` fires between a failed attempt and the next one — i.e.,
+    only when a retry is actually going to happen. Terminal failures (max
+    retries exhausted, or a non-retryable exception) propagate out of the
+    ``chat_span`` and become the span's ERROR status; they are not recorded
+    here to avoid double-counting.
+    """
+
+    def _cb(retry_state: RetryCallState) -> None:
+        outcome = retry_state.outcome
+        if outcome is None:
+            return
+        exc = outcome.exception()
+        if exc is None:
+            return
+        record_retry_event(span, attempt=retry_state.attempt_number, exc=exc)
+
+    return _cb
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Best-effort int coercion for span attribute values."""
+    if isinstance(value, bool):  # bool is an int subtype — exclude it.
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    """Best-effort float coercion for span attribute values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None

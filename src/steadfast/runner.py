@@ -10,6 +10,11 @@ Per ADR-0002, ``run_id`` is a deterministic SHA-256 of canonicalized inputs;
 identical configurations produce identical IDs, so resumption is automatic.
 Failed reps are not auto-retried (failures are signal); a future
 ``--retry-failed`` flag handles deliberate re-runs.
+
+Per ADR-0003 §A.1, the runner emits ``task`` and ``rep`` spans. The CLI
+emits the parent ``benchmark`` span; the model client emits child ``chat``
+spans inside each rep. When tracing is not configured, the OTel API
+returns no-op spans so the runner code path is unchanged.
 """
 
 from __future__ import annotations
@@ -26,7 +31,9 @@ from pydantic import BaseModel, Field
 
 from steadfast import __version__
 from steadfast.agent import Agent, AgentResponse, Task
+from steadfast.judges.base import Verdict
 from steadfast.storage.sqlite import CheckpointStore, RepRow
+from steadfast.tracing import rep_span, task_span
 
 
 class RepStatus(StrEnum):
@@ -43,6 +50,14 @@ class RepRecord(BaseModel):
 
     Pydantic-typed counterpart to :class:`steadfast.storage.sqlite.RepRow`.
     The runner converts between the two; storage is the dumb persistence layer.
+
+    ``verdict`` is populated by the post-run scoring phase (the CLI calls
+    a :class:`steadfast.judges.base.Judge` on each completed rep). It is
+    *not* persisted in SQLite for v0.1 — the JSON ``RunResult`` output is
+    the canonical record of verdicts. Re-running the bench command with
+    the same checkpoint will resume completed reps from SQLite without
+    verdicts and re-judge them. This is acceptable because judges are
+    deterministic on content (exact match) or re-runnable (rubric).
     """
 
     run_id: str
@@ -54,12 +69,14 @@ class RepRecord(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     cost_usd: Decimal = Field(default=Decimal("0"))
+    verdict: Verdict | None = None
 
 
 class RunResult(BaseModel):
     """Final result of executing a task N times.
 
-    Persisted to ``<output>/<task_id>.json`` by the CLI.
+    Persisted to ``<output>/<task_id>.json`` by the CLI. Verdicts (when
+    present) ride on each :class:`RepRecord`.
     """
 
     run_id: str
@@ -130,6 +147,7 @@ def _rep_row_to_record(row: RepRow) -> RepRecord:
         started_at=(datetime.fromisoformat(row.started_at) if row.started_at else None),
         completed_at=(datetime.fromisoformat(row.completed_at) if row.completed_at else None),
         cost_usd=Decimal(row.cost_usd or "0"),
+        verdict=None,
     )
 
 
@@ -181,88 +199,107 @@ async def run_task(
         started_at=_now_iso(),
     )
 
-    existing = {r.rep_idx: r for r in await store.list_reps_for_run(run_id) if r.task_id == task.id}
+    with task_span(
+        task_id=task.id,
+        domain=task.domain,
+        run_id=run_id,
+        reps_total=reps,
+    ):
+        existing = {
+            r.rep_idx: r for r in await store.list_reps_for_run(run_id) if r.task_id == task.id
+        }
 
-    pending_indices: list[int] = []
-    for i in range(reps):
-        existing_row = existing.get(i)
-        if existing_row is None or existing_row.status in {
-            RepStatus.PENDING.value,
-            RepStatus.IN_FLIGHT.value,
-        }:
-            await store.upsert_rep(
-                run_id=run_id,
-                task_id=task.id,
-                rep_idx=i,
-                status=RepStatus.PENDING.value,
-                response_json=None,
-                error=None,
-                started_at=None,
-                completed_at=None,
-                cost_usd="0",
-            )
-            pending_indices.append(i)
+        pending_indices: list[int] = []
+        for i in range(reps):
+            existing_row = existing.get(i)
+            if existing_row is None or existing_row.status in {
+                RepStatus.PENDING.value,
+                RepStatus.IN_FLIGHT.value,
+            }:
+                await store.upsert_rep(
+                    run_id=run_id,
+                    task_id=task.id,
+                    rep_idx=i,
+                    status=RepStatus.PENDING.value,
+                    response_json=None,
+                    error=None,
+                    started_at=None,
+                    completed_at=None,
+                    cost_usd="0",
+                )
+                pending_indices.append(i)
 
-    async def execute_rep(rep_idx: int) -> None:
-        await store.upsert_rep(
-            run_id=run_id,
-            task_id=task.id,
-            rep_idx=rep_idx,
-            status=RepStatus.IN_FLIGHT.value,
-            response_json=None,
-            error=None,
-            started_at=_now_iso(),
-            completed_at=None,
-            cost_usd="0",
-        )
-        try:
-            response = await agent.arun(task)
-        except Exception as exc:
+        async def execute_rep(rep_idx: int) -> None:
+            # Persist IN_FLIGHT before opening the rep span — that way the
+            # checkpoint reflects "we tried" even if the OTel exporter
+            # itself fails (which would be a weird failure mode but worth
+            # being robust to).
             await store.upsert_rep(
                 run_id=run_id,
                 task_id=task.id,
                 rep_idx=rep_idx,
-                status=RepStatus.FAILED.value,
+                status=RepStatus.IN_FLIGHT.value,
                 response_json=None,
-                error=f"{type(exc).__name__}: {exc}",
-                started_at=None,  # COALESCE preserves prior started_at
-                completed_at=_now_iso(),
+                error=None,
+                started_at=_now_iso(),
+                completed_at=None,
                 cost_usd="0",
             )
-            return
+            response: AgentResponse | None = None
+            try:
+                with rep_span(rep_idx=rep_idx, run_id=run_id, task_id=task.id):
+                    response = await agent.arun(task)
+            except Exception as exc:
+                # rep_span has already marked the span ERROR with error.type;
+                # the exception propagated out so we can persist FAILED
+                # without re-doing that work. Per ADR-0002 §D.1 we don't
+                # auto-retry — sibling reps in the gather() fanout proceed.
+                await store.upsert_rep(
+                    run_id=run_id,
+                    task_id=task.id,
+                    rep_idx=rep_idx,
+                    status=RepStatus.FAILED.value,
+                    response_json=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                    started_at=None,  # COALESCE preserves prior started_at
+                    completed_at=_now_iso(),
+                    cost_usd="0",
+                )
+                return
 
-        cost = str(response.cost_usd) if response.cost_usd is not None else "0"
-        await store.upsert_rep(
-            run_id=run_id,
-            task_id=task.id,
-            rep_idx=rep_idx,
-            status=RepStatus.COMPLETED.value,
-            response_json=response.model_dump_json(),
-            error=None,
-            started_at=None,  # preserved by COALESCE
-            completed_at=_now_iso(),
-            cost_usd=cost,
+            assert response is not None  # mypy: tightens the union after the try
+            cost = str(response.cost_usd) if response.cost_usd is not None else "0"
+            await store.upsert_rep(
+                run_id=run_id,
+                task_id=task.id,
+                rep_idx=rep_idx,
+                status=RepStatus.COMPLETED.value,
+                response_json=response.model_dump_json(),
+                error=None,
+                started_at=None,  # preserved by COALESCE
+                completed_at=_now_iso(),
+                cost_usd=cost,
+            )
+
+        if pending_indices:
+            # return_exceptions=True so an infrastructure error in one rep does
+            # not cancel sibling reps mid-flight (which would lose their
+            # checkpoint state). Per-rep agent exceptions are handled inside
+            # execute_rep already; anything reaching this point is an unexpected
+            # failure of the persistence layer or the runner itself.
+            results = await asyncio.gather(
+                *(execute_rep(i) for i in pending_indices), return_exceptions=True
+            )
+            infra_errors = [r for r in results if isinstance(r, BaseException)]
+            if infra_errors:
+                # Re-raise the first to surface the failure; sibling reps that
+                # completed are already persisted in the store.
+                raise infra_errors[0]
+
+        final_rows = sorted(
+            (r for r in await store.list_reps_for_run(run_id) if r.task_id == task.id),
+            key=lambda r: r.rep_idx,
         )
-
-    if pending_indices:
-        # return_exceptions=True so an infrastructure error in one rep does
-        # not cancel sibling reps mid-flight (which would lose their
-        # checkpoint state). Per-rep agent exceptions are handled inside
-        # execute_rep already; anything reaching this point is an unexpected
-        # failure of the persistence layer or the runner itself.
-        results = await asyncio.gather(
-            *(execute_rep(i) for i in pending_indices), return_exceptions=True
-        )
-        infra_errors = [r for r in results if isinstance(r, BaseException)]
-        if infra_errors:
-            # Re-raise the first to surface the failure; sibling reps that
-            # completed are already persisted in the store.
-            raise infra_errors[0]
-
-    final_rows = sorted(
-        (r for r in await store.list_reps_for_run(run_id) if r.task_id == task.id),
-        key=lambda r: r.rep_idx,
-    )
-    final_records = [_rep_row_to_record(r) for r in final_rows]
+        final_records = [_rep_row_to_record(r) for r in final_rows]
 
     return RunResult(run_id=run_id, task=task, reps=final_records)

@@ -7,7 +7,7 @@ similarity, default rubric judge — see ``docs/adr/0001-infrastructure-model.md
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import openai
 
@@ -22,6 +22,9 @@ from steadfast.models.pricing import compute_cost
 
 class OpenAIClient(BaseModelClient):
     """:class:`BaseModelClient` implementation backed by ``openai.AsyncOpenAI``."""
+
+    # gen_ai.provider.name canonical value per OTel semconv registry.
+    PROVIDER_NAME: ClassVar[str] = "openai"
 
     def __init__(
         self,

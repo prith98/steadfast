@@ -8,7 +8,7 @@ genai ``user``; Steadfast's ``assistant`` → genai ``model``; Steadfast's
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -25,6 +25,11 @@ from steadfast.models.pricing import compute_cost
 
 class GoogleClient(BaseModelClient):
     """:class:`BaseModelClient` implementation backed by ``google.genai.Client.aio``."""
+
+    # gen_ai.provider.name canonical value per OTel semconv registry. The
+    # spec lists ``gcp.gemini`` for Google's Gemini API (vs ``gcp.vertex_ai``
+    # for the Vertex variant); we use the Gemini Developer API surface.
+    PROVIDER_NAME: ClassVar[str] = "gcp.gemini"
 
     def __init__(
         self,

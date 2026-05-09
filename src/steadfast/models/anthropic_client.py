@@ -7,7 +7,7 @@ across providers.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import anthropic
 
@@ -22,6 +22,9 @@ from steadfast.models.pricing import compute_cost
 
 class AnthropicClient(BaseModelClient):
     """:class:`BaseModelClient` implementation backed by ``anthropic.AsyncAnthropic``."""
+
+    # gen_ai.provider.name canonical value per OTel semconv registry.
+    PROVIDER_NAME: ClassVar[str] = "anthropic"
 
     def __init__(
         self,
