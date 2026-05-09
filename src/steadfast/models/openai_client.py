@@ -121,9 +121,16 @@ class OpenAIClient(BaseModelClient):
         }
         if logprobs:
             api_kwargs["logprobs"] = True
-            # ``top_logprobs`` defaults vary by SDK version; pin it
-            # explicitly so the response shape is deterministic.
-            api_kwargs["top_logprobs"] = 0
+            # We don't request ``top_logprobs`` — the chosen-token logprob
+            # is everything Kadavath et al. 2022 / METHODOLOGY §3.1 needs;
+            # alternatives would cost extra tokens. Per the OpenAI API
+            # spec, ``top_logprobs`` is optional even when ``logprobs=true``;
+            # omitting it yields ``content[i].logprob`` populated for each
+            # chosen token with an empty ``content[i].top_logprobs`` list.
+            # We avoid ``top_logprobs=0`` because some SDK versions reject
+            # the literal zero or interpret it inconsistently across
+            # provider variants — omission is the safer, more documented
+            # surface.
 
         response = await self._client.chat.completions.create(**api_kwargs)
 

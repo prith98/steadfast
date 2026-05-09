@@ -54,9 +54,22 @@ _CONFIDENCE_LABEL = re.compile(
     r"^[ \t]*CONFIDENCE[ \t]*:[ \t]*([0-9.,%]+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
-# Match a REFUSE token surrounded by optional whitespace / punctuation.
-# We accept ``REFUSE`` and ``REFUSE.`` and ``"REFUSE"`` etc.
+# Match a REFUSE token surrounded by optional whitespace / punctuation
+# on a single line. We accept ``REFUSE`` and ``REFUSE.`` and ``"REFUSE"`` etc.
+# The check is line-anchored against the *first non-empty line* of the
+# answer slice — the prompt instructs the model to put REFUSE on the
+# ANSWER line by itself; if the model emits prose first and REFUSE on a
+# subsequent line, that's not a refusal under the elicitation contract.
 _REFUSE_TOKEN = re.compile(r"^['\" .]*REFUSE['\" .]*$", re.IGNORECASE)
+
+
+def _first_nonempty_line(s: str) -> str:
+    """Return the first non-empty stripped line of ``s``, or ``""`` if none."""
+    for raw in s.splitlines():
+        stripped = raw.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 class ParsedConfidence(BaseModel):
@@ -168,7 +181,7 @@ def parse_verbalized_confidence(text: str) -> ParsedConfidence:
         # to start-of-CONFIDENCE-label. Captures multi-line answers cleanly.
         answer_text = text[answer_header.end() : confidence_match.start()].rstrip()
 
-    refused = bool(_REFUSE_TOKEN.match(answer_text.strip()))
+    refused = bool(_REFUSE_TOKEN.match(_first_nonempty_line(answer_text)))
 
     return ParsedConfidence(
         answer=answer_text,

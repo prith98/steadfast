@@ -154,6 +154,27 @@ def test_parse_refuse_with_punctuation() -> None:
     assert result.refused is True
 
 
+def test_parse_refuse_first_line_of_multi_line_answer() -> None:
+    """REFUSE on the first line of a multi-line answer counts as a refusal.
+
+    Some models emit a clarification on a follow-up line; the elicitation
+    contract treats the *first* non-empty line of the ANSWER as binding.
+    """
+    text = "ANSWER: REFUSE\n(question cannot be answered from the prompt)\nCONFIDENCE: 0.0"
+    result = parse_verbalized_confidence(text)
+    assert result.refused is True
+
+
+def test_parse_does_not_refuse_when_prose_precedes_refuse() -> None:
+    """A model that emits prose followed by 'REFUSE' on a later line is NOT
+    refusing under the elicitation contract — the contract requires REFUSE
+    on the answer line itself.
+    """
+    text = "ANSWER: The store hours are 9 to 5 Sundays.\nREFUSE\nCONFIDENCE: 0.6"
+    result = parse_verbalized_confidence(text)
+    assert result.refused is False
+
+
 def test_parse_lowercase_labels() -> None:
     """Real-world models often emit lowercase labels; we accept them."""
     text = "answer: foo bar\nconfidence: 0.5"
