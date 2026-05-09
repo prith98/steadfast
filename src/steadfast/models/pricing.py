@@ -86,6 +86,15 @@ PRICING: Final[dict[str, ModelPricing]] = {
         output_per_mtok=Decimal("2.50"),
         dated_at=_SNAPSHOT,
     ),
+    # ---- OpenAI embeddings ----
+    # text-embedding-3-large is the v0.1 infrastructure embedding per
+    # ADR-0001. Embeddings have no output tokens; output_per_mtok=0
+    # makes ``compute_cost`` work uniformly.
+    "text-embedding-3-large": ModelPricing(
+        input_per_mtok=Decimal("0.13"),
+        output_per_mtok=Decimal("0"),
+        dated_at=_SNAPSHOT,
+    ),
 }
 
 _PER_MTOK = Decimal("1000000")

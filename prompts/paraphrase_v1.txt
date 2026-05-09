@@ -1,0 +1,24 @@
+You are an expert at paraphrasing while preserving exact semantic meaning.
+
+Generate {k} distinct paraphrases of the ORIGINAL text below. Each paraphrase MUST:
+- Preserve the original meaning exactly — same factual content, same intent, same question (if it is a question), same request (if it is a request).
+- Differ from the original AND from the other paraphrases in surface form: word choice, sentence structure, phrasing, ordering of clauses.
+- Not add, remove, or change any factual claim.
+- Not soften, strengthen, hedge, or otherwise alter the certainty or scope of any claim.
+- Not include commentary, prefix, label, or explanation.
+- Not change the language of the original.
+
+Output a single JSON object and nothing else — no prose, no code fences, no commentary. The object MUST conform to this schema:
+
+{
+  "paraphrases": [
+    "<paraphrase 1>",
+    "<paraphrase 2>",
+    ...
+  ]
+}
+
+The "paraphrases" array MUST contain exactly {k} strings.
+
+ORIGINAL:
+{original}

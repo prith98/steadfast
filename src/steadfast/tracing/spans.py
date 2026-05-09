@@ -48,6 +48,7 @@ from steadfast.tracing.conventions import (
     GEN_AI_USAGE_INPUT_TOKENS,
     GEN_AI_USAGE_OUTPUT_TOKENS,
     OP_CHAT,
+    OP_EMBEDDINGS,
     SPAN_BENCHMARK,
     SPAN_REP_PREFIX,
     SPAN_SCORE_PREFIX,
@@ -236,6 +237,53 @@ def record_chat_response(
         span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason])
     if response_id is not None:
         span.set_attribute(GEN_AI_RESPONSE_ID, response_id)
+    if cost_usd is not None:
+        span.set_attribute(STEADFAST_COST_USD, str(cost_usd))
+
+
+@contextmanager
+def embeddings_span(
+    *,
+    provider: str,
+    model: str,
+) -> Iterator[Span]:
+    """Embedding-call span — analog of :func:`chat_span` for embedding models.
+
+    Span name follows the GenAI convention ``{op_name} {model}`` so Phoenix
+    renders it as e.g. ``embeddings text-embedding-3-large``.
+    Embeddings have no output tokens or finish reasons, so the response
+    helper :func:`record_embeddings_response` only records input tokens
+    and (optionally) cost.
+    """
+    attributes: dict[str, Any] = {
+        GEN_AI_OPERATION_NAME: OP_EMBEDDINGS,
+        GEN_AI_PROVIDER_NAME: provider,
+        GEN_AI_SYSTEM: provider,
+        GEN_AI_REQUEST_MODEL: model,
+    }
+    with _start_span(
+        name=f"{OP_EMBEDDINGS} {model}",
+        kind=SpanKind.CLIENT,
+        attributes=attributes,
+    ) as span:
+        yield span
+
+
+def record_embeddings_response(
+    span: Span,
+    *,
+    response_model: str,
+    input_tokens: int,
+    cost_usd: Decimal | None = None,
+) -> None:
+    """Populate response-side attributes on an :func:`embeddings_span`.
+
+    Embeddings have no ``output_tokens`` or ``finish_reasons`` per the
+    OpenAI / Cohere / Voyage embedding conventions; the chat-only
+    attributes are intentionally omitted.
+    """
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, response_model)
+    span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
     if cost_usd is not None:
         span.set_attribute(STEADFAST_COST_USD, str(cost_usd))
 

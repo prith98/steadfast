@@ -196,6 +196,21 @@ def test_rubric_judge_parses_first_attempt() -> None:
     assert client.calls == 1
 
 
+def test_rubric_judge_extracts_json_from_surrounding_prose() -> None:
+    """LLM emits prose alongside the JSON object — extraction must still parse."""
+    prose = (
+        "Sure, here is my verdict:\n\n"
+        '{"score": 0.8, "passed": true, "reason": "mostly correct"}\n\n'
+        "Let me know if you need clarification."
+    )
+    client = _ScriptedClient(outputs=[prose])
+    judge = RubricJudge(client=client, model="gpt-test")
+    verdict = asyncio.run(judge.ajudge(_rubric_task(), AgentResponse(answer="4")))
+    assert verdict.score == 0.8
+    assert verdict.passed is True
+    assert client.calls == 1
+
+
 def test_rubric_judge_strips_code_fences() -> None:
     """Real LLMs often wrap JSON in ```json fences — judge must strip them."""
     canned = '```json\n{"score": 0.7, "passed": true, "reason": "mostly right"}\n```'
@@ -232,9 +247,10 @@ def test_rubric_judge_does_not_double_substitute_placeholders() -> None:
     text to be injected at two locations after rendering. Single-pass
     substitution prevents the silent prompt-corruption bug.
     """
-    from steadfast.judges.rubric import _load_rubric_prompt, _render_prompt
+    from steadfast._llm_parsing import load_prompt
+    from steadfast.judges.rubric import _render_prompt
 
-    template = _load_rubric_prompt()
+    template = load_prompt("rubric_v1.txt")
     task = Task(
         id="t1",
         domain="d",

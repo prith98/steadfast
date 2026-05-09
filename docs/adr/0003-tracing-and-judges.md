@@ -224,6 +224,14 @@ to scoring semantics gets a new file (`_v2`) and an ADR per
   surface it explicitly — opaque crashes would be worse, but it's
   another error path to maintain.
 
+## Update history
+
+- **2026-05-09 (ADR-0004 §I)**: added an ``embeddings {model}`` CLIENT
+  span (sibling-of-chat under whatever parent is active) for
+  :meth:`OpenAIClient.aembed`. Span name follows the same
+  ``{op_name} {model}`` convention; the helper is
+  :func:`steadfast.tracing.embeddings_span`.
+
 ## Path to v0.2
 
 - **Logprob span attribute** populated by Friday's calibration work; the

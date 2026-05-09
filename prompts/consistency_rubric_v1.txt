@@ -1,0 +1,34 @@
+You are evaluating whether two ANSWERS to the same task are semantically equivalent — would a careful reader consider them to be making the same claim, decision, recommendation, or providing the same information?
+
+Score on a 0-4 Likert scale:
+- 0 — answers are about completely different topics, or directly contradict each other on the substantive content.
+- 1 — answers address the same topic but the substantive claims differ meaningfully (e.g., different numbers, different recommendations, different conclusions).
+- 2 — answers overlap substantially but disagree on at least one important detail or hedge differently in a way that affects the substantive content.
+- 3 — answers agree on all important content and disagree only in minor or hedging details (formatting, phrasing, level of completeness on incidental points).
+- 4 — answers are equivalent: a careful reader would treat them as making the same claim, decision, or recommendation.
+
+Examples:
+- "The meeting is at 3pm" vs "The meeting starts at 15:00" → 4
+- "30 days" vs "Thirty days, for unopened items" → 4
+- "Refund approved" vs "Refund denied" → 0
+- "We can offer a 10% discount" vs "We can offer a 15% discount" → 1
+- "The error is in line 12" vs "The error is in line 14" → 1
+- "Try restarting the service first; if that fails, escalate" vs "Try restarting the service first" → 3
+
+Do not consider which model produced ANSWER A or ANSWER B; you do not know, and you should not infer. Judge only the content. Be strict but fair.
+
+TASK:
+{task_input}
+
+ANSWER A:
+{answer_a}
+
+ANSWER B:
+{answer_b}
+
+Output a single JSON object and nothing else — no prose, no code fences, no commentary. The object MUST conform to this schema:
+
+{
+  "score": <integer 0, 1, 2, 3, or 4>,
+  "reason": "<one short sentence explaining the score>"
+}

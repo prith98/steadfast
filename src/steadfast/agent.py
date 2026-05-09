@@ -48,6 +48,12 @@ class Task(BaseModel):
     elicits a probability estimate. Per Q1 (project kickoff), the primary
     contract requires the agent to concatenate the suffix into its prompt and
     populate :attr:`AgentResponse.confidence` itself.
+
+    ``output_schema`` is an optional JSON-Schema string consumed by the
+    format-consistency metric (``docs/METHODOLOGY.md`` §1.3). Tasks
+    without a schema return ``N/A`` from format consistency. Stored as a
+    string rather than ``dict[str, Any]`` to keep the public contract
+    Pydantic-typed (ADR-0002 §A.3 / ADR-0004 §D).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -58,6 +64,7 @@ class Task(BaseModel):
     ground_truth: GroundTruth | None = None
     judge: Literal["exact_match", "rubric"] = "rubric"
     confidence_suffix: str | None = None
+    output_schema: str | None = None
     metadata: dict[str, MetadataValue] = Field(default_factory=dict)
 
 

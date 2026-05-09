@@ -44,6 +44,8 @@ Once a metric is defined here, its computation is _frozen_ for v0.1. If we disco
 
 **Definition:** For a task `t`, generate `K=5` paraphrases of the input. Run the agent once on each paraphrase. Compute pairwise semantic similarity across the resulting outputs.
 
+K=5 is intentionally distinct from the N=10 multi-run default: paraphrases are _different_ inputs each run once, not the same input run N times. The N=10 commitment is about distributional measurement of a fixed input; output consistency measures behavior across semantically equivalent _inputs_. (See ADR-0004 §A.)
+
 **Computation:**
 
 - Paraphrase generation: GPT-5.2 with a fixed prompt (frozen in `prompts/paraphrase_v1.txt`), temperature 0.7, deterministic seed per task. Paraphrases are validated by a second LLM call that confirms semantic equivalence to the original; rejected paraphrases are regenerated up to 3 times.

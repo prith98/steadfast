@@ -21,12 +21,9 @@ Pattern adapted from the Pydantic Evals LLM-as-judge guide
 from __future__ import annotations
 
 import re
-from importlib import resources
-from pathlib import Path
 from typing import Final
 
-from pydantic import ValidationError
-
+from steadfast._llm_parsing import load_prompt, try_parse_strict
 from steadfast.agent import AgentResponse, Task
 from steadfast.judges.base import Judge, JudgeParseError, Verdict
 from steadfast.models.base import BaseModelClient
@@ -36,35 +33,6 @@ from steadfast.models.base import BaseModelClient
 # methodology version per docs/METHODOLOGY.md §"Versioning".
 RUBRIC_PROMPT_VERSION: Final[str] = "v1"
 DEFAULT_RUBRIC_MODEL: Final[str] = "gpt-5.2"
-
-
-def _load_rubric_prompt() -> str:
-    """Load the frozen rubric prompt template from ``prompts/rubric_v1.txt``.
-
-    Tries the installed-package layout first (``importlib.resources``),
-    falls back to the repo-relative path so editable installs and
-    development checkouts work without running ``pip install -e``.
-    """
-    # Try package data first — works when prompts/ is shipped with the wheel.
-    try:
-        ref = resources.files("steadfast").joinpath("prompts/rubric_v1.txt")
-        if ref.is_file():
-            return ref.read_text(encoding="utf-8")
-    except (ModuleNotFoundError, FileNotFoundError):
-        pass
-
-    # Repo-relative fallback for editable / source-tree runs. The file is
-    # at ``<repo>/prompts/rubric_v1.txt``; this module is at
-    # ``<repo>/src/steadfast/judges/rubric.py`` → 4 parents up.
-    repo_root = Path(__file__).resolve().parents[3]
-    candidate = repo_root / "prompts" / "rubric_v1.txt"
-    if candidate.is_file():
-        return candidate.read_text(encoding="utf-8")
-
-    raise FileNotFoundError(
-        "rubric_v1.txt not found in package data or repo-relative path; "
-        "ensure prompts/rubric_v1.txt is shipped with the wheel."
-    )
 
 
 _RETRY_REMINDER = (
@@ -119,7 +87,7 @@ class RubricJudge(Judge):
     ) -> None:
         self._client = client
         self._model = model
-        self._template = _load_rubric_prompt()
+        self._template = load_prompt("rubric_v1.txt")
 
     @property
     def model(self) -> str:
@@ -133,7 +101,7 @@ class RubricJudge(Judge):
 
         # First attempt.
         text = (await self._client.acomplete(prompt, model=self._model)).text
-        verdict = _try_parse(text)
+        verdict = try_parse_strict(text, Verdict)
         if verdict is not None:
             return verdict
 
@@ -141,7 +109,7 @@ class RubricJudge(Judge):
         # is the only retry — exhaustion raises rather than soft-failing.
         retry_prompt = f"{prompt}\n\n{_RETRY_REMINDER}"
         text = (await self._client.acomplete(retry_prompt, model=self._model)).text
-        verdict = _try_parse(text)
+        verdict = try_parse_strict(text, Verdict)
         if verdict is not None:
             return verdict
 
@@ -149,28 +117,3 @@ class RubricJudge(Judge):
             f"RubricJudge ({self._model}) produced unparseable output twice; "
             f"last output (truncated): {text[:200]!r}"
         )
-
-
-def _try_parse(text: str) -> Verdict | None:
-    """Parse ``text`` as a :class:`Verdict`, stripping common envelopes.
-
-    Returns the verdict on success or ``None`` on validation failure
-    (caller decides whether to retry or raise). Handles two real-world
-    deviations from "JSON-only" prompting:
-
-    1. Triple-backtick code fences (``\\`\\`\\`json ... \\`\\`\\``).
-    2. Surrounding whitespace.
-    """
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        # Strip a leading fence (with optional language tag) and a trailing fence.
-        first_newline = cleaned.find("\n")
-        if first_newline != -1:
-            cleaned = cleaned[first_newline + 1 :]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-    try:
-        return Verdict.model_validate_json(cleaned)
-    except ValidationError:
-        return None

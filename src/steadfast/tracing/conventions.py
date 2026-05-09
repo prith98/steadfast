@@ -75,6 +75,7 @@ ERROR_TYPE: Final[str] = "error.type"
 # ---------------------------------------------------------------------------
 
 OP_CHAT: Final[str] = "chat"
+OP_EMBEDDINGS: Final[str] = "embeddings"
 OP_EXECUTE_TOOL: Final[str] = "execute_tool"
 OP_INVOKE_AGENT: Final[str] = "invoke_agent"
 

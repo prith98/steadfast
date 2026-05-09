@@ -1,0 +1,27 @@
+You are evaluating whether a PARAPHRASE preserves the exact semantic meaning of an ORIGINAL text. Two pieces of text are semantically equivalent if a careful reader would understand them as making exactly the same claim, request, or asking the same question — even if the wording, structure, or tone differs.
+
+Equivalent (true):
+- "The meeting is at 3pm." vs "The meeting starts at 15:00."
+- "Please ship via FedEx." vs "I would like this shipped using FedEx."
+- "What is your return window?" vs "How long do customers have to return items?"
+
+NOT equivalent (false):
+- "Refund approved." vs "Refund denied." (opposite outcomes)
+- "What is the return window?" vs "What is the warranty period?" (different question)
+- "We can offer a 10% discount." vs "We can offer up to a 10% discount." (different scope)
+- "Please cancel my account." vs "Please pause my account." (different action)
+
+Be strict. If the paraphrase changes any factual content, scope, certainty, action, or the question being asked, output false. Wording / register / sentence structure differences are fine; substantive content differences are not.
+
+Output a single JSON object and nothing else — no prose, no code fences, no commentary. The object MUST conform to this schema:
+
+{
+  "equivalent": <true or false>,
+  "reason": "<one short sentence>"
+}
+
+ORIGINAL:
+{original}
+
+PARAPHRASE:
+{paraphrase}

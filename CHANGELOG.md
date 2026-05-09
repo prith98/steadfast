@@ -59,6 +59,48 @@ here.
 - **`steadfast bench --exporter`**: ``console`` | ``otlp`` | ``none``
   selects the OTel exporter; the run is wrapped in a ``benchmark`` span
   and judging is dispatched after ``run_task`` returns.
+- **Consistency dimension** (``docs/adr/0004-consistency-and-stats.md``):
+  three measurement functions in ``metrics/consistency.py`` — output
+  consistency (K=5 paraphrases x pairwise embedding cosine + 0-4 Likert
+  rubric normalized to [0,1]; mean rubric reported with bootstrap CI),
+  trajectory consistency (pairwise normalized Wagner-Fischer Levenshtein
+  over tool-name sequences, plus ``agentevals`` superset arg-equivalence
+  rate), and format consistency (JSON-schema pass-rate with Wilson 95%
+  CI). All three return frozen Pydantic result models.
+- **Paraphrase generator** (``perturbations/paraphrase.py``): K=5 by
+  default with frozen ``prompts/paraphrase_v1.txt``, validator second
+  pass via ``prompts/paraphrase_validate_v1.txt``, up to 3 retries on
+  rejected paraphrases, rejection rate tracked as a quality signal.
+- **Statistical primitives** (``stats/{bootstrap,wilson}.py``): canonical
+  entry points for confidence intervals. ``bootstrap_ci`` wraps
+  ``scipy.stats.bootstrap`` with the methodology defaults (BCa, 10k
+  resamples, 95% CI) and explicit handling of empty / N<2 / zero-variance
+  edge cases. ``wilson_ci`` wraps ``scipy.stats.binomtest.proportion_ci``.
+- **Embedding API** (``OpenAIClient.aembed``): batched call returning
+  ``(vectors, usage, cost)``; emits an ``embeddings {model}`` span via the
+  new ``embeddings_span`` / ``record_embeddings_response`` helpers in
+  ``tracing/spans.py``. Default model ``text-embedding-3-large`` per
+  ADR-0001; pricing entry added to ``models/pricing.PRICING``.
+- **`Task.output_schema: str | None`** — JSON-schema string consumed by
+  format consistency. Tasks without a schema return N/A.
+- **`_llm_parsing.try_parse_strict`** — shared helper for parsing LLM
+  JSON output as Pydantic models; ``RubricJudge`` was refactored to use
+  it (removing its private ``_try_parse``).
+- **Frozen prompts**: ``prompts/{paraphrase_v1.txt, paraphrase_validate_v1.txt,
+  consistency_rubric_v1.txt}``.
+- 57 new tests covering Levenshtein, cosine, Wilson, bootstrap edge
+  cases, paraphrase happy/retry/exhaustion paths, format-consistency
+  pass-rate, trajectory-consistency hand-computed similarity values,
+  and end-to-end output consistency on stub clients.
+- Runtime deps: ``agentevals``, ``jsonschema``.
+
+### Resolved methodology questions
+- **Q1 (K=5 vs N=10)** — ``docs/METHODOLOGY.md`` §1.1 now carries a
+  one-sentence clarification (per ADR-0004 §A): paraphrases are
+  *different* inputs each run once, distinct from the N=10 commitment
+  about distributional measurement of a fixed input. Computation
+  unchanged; classified as a "typo and clarification fix" per
+  §"Versioning".
 
 ### Changed
 
