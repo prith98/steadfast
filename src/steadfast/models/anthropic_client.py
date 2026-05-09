@@ -50,8 +50,15 @@ class AnthropicClient(BaseModelClient):
         *,
         model: str,
         max_tokens: int = 1024,
+        logprobs: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:
+        # Anthropic's public API does not expose per-token logprobs (per
+        # ADR-0005 §A); we accept the Steadfast-internal ``logprobs`` kwarg
+        # so downstream callers can pass it uniformly across providers, and
+        # drop it on the floor here. ``ChatResponse.avg_logprob`` stays None.
+        del logprobs
+
         # Anthropic separates the system prompt from the message list.
         system_msgs = [m.content for m in messages if m.role == "system"]
         user_assistant = [

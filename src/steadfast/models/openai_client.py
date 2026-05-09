@@ -33,6 +33,41 @@ from steadfast.tracing import embeddings_span, record_embeddings_response
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 
 
+def _extract_openai_avg_logprob(choice: Any) -> float | None:
+    """Mean per-token logprob from an OpenAI ChatCompletionChoice with logprobs.
+
+    OpenAI's chat completions return logprobs under
+    ``choice.logprobs.content``: a list with one entry per output token,
+    each carrying ``.logprob`` (the chosen token's logprob). We average
+    those per Kadavath et al. 2022 — the geometric mean of per-token
+    probabilities is the calibration heuristic adopted in METHODOLOGY
+    §3.1.
+
+    Returns ``None`` when the response has no logprobs (e.g., the
+    request didn't ask for them, or the SDK shape we expect is missing).
+    Defensive against SDK-version drift: any structural mismatch yields
+    ``None`` rather than raising — calibration treats absence as N/A.
+    """
+    logprobs = getattr(choice, "logprobs", None)
+    if logprobs is None:
+        return None
+    content = getattr(logprobs, "content", None)
+    if not content:
+        return None
+    values: list[float] = []
+    for token in content:
+        lp = getattr(token, "logprob", None)
+        if lp is None:
+            continue
+        try:
+            values.append(float(lp))
+        except (TypeError, ValueError):
+            return None
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 class OpenAIClient(BaseModelClient):
     """:class:`BaseModelClient` implementation backed by ``openai.AsyncOpenAI``."""
 
@@ -63,16 +98,34 @@ class OpenAIClient(BaseModelClient):
         *,
         model: str,
         max_tokens: int = 1024,
+        logprobs: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:
-        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        """Send a chat completion request via the OpenAI SDK.
 
-        response = await self._client.chat.completions.create(
-            model=model,
-            messages=api_messages,  # type: ignore[arg-type]
-            max_completion_tokens=max_tokens,
+        ``logprobs=True`` is a Steadfast-internal kwarg (ADR-0005 §A) — when
+        set, we ask the SDK for chosen-token logprobs and compute the mean
+        per-token logprob over the response, populating
+        :attr:`ChatResponse.avg_logprob`. We do not fan top-k alternatives
+        out (``top_logprobs=0`` is enforced) because the calibration metric
+        only consumes the chosen-token mean per Kadavath et al. 2022; pulling
+        ``top_logprobs > 0`` would cost extra tokens and bandwidth without
+        feeding any v0.1 metric.
+        """
+        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        api_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": api_messages,
+            "max_completion_tokens": max_tokens,
             **kwargs,
-        )
+        }
+        if logprobs:
+            api_kwargs["logprobs"] = True
+            # ``top_logprobs`` defaults vary by SDK version; pin it
+            # explicitly so the response shape is deterministic.
+            api_kwargs["top_logprobs"] = 0
+
+        response = await self._client.chat.completions.create(**api_kwargs)
 
         choice = response.choices[0]
         text = choice.message.content or ""
@@ -90,12 +143,17 @@ class OpenAIClient(BaseModelClient):
         )
         cost = compute_cost(model, usage)
 
+        avg_logprob: float | None = None
+        if logprobs:
+            avg_logprob = _extract_openai_avg_logprob(choice)
+
         return ChatResponse(
             text=text,
             usage=usage,
             cost_usd=cost,
             model=response.model,
             finish_reason=choice.finish_reason,
+            avg_logprob=avg_logprob,
             raw=response.model_dump(),
         )
 

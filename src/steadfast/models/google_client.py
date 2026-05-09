@@ -57,8 +57,16 @@ class GoogleClient(BaseModelClient):
         *,
         model: str,
         max_output_tokens: int = 1024,
+        logprobs: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:
+        # Google's Gemini API exposes ``responseLogprobs`` on a subset of
+        # models behind a config flag; v0.1 defers logprob coverage for
+        # Gemini per ADR-0005 §A (partial coverage would create exactly the
+        # cross-model confusion we're avoiding). Accept the kwarg for
+        # interface uniformity and drop it.
+        del logprobs
+
         system_msgs = [m.content for m in messages if m.role == "system"]
         contents: list[genai_types.Content] = []
         for m in messages:

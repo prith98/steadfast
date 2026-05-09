@@ -57,6 +57,7 @@ from steadfast.tracing.conventions import (
     STEADFAST_COST_USD,
     STEADFAST_JUDGE_KIND,
     STEADFAST_JUDGE_MODEL,
+    STEADFAST_LOGPROB_AVG,
     STEADFAST_PACKAGE_VERSION,
     STEADFAST_REP_IDX,
     STEADFAST_REPS_TOTAL,
@@ -220,6 +221,7 @@ def record_chat_response(
     finish_reason: str | None,
     response_id: str | None = None,
     cost_usd: Decimal | None = None,
+    avg_logprob: float | None = None,
 ) -> None:
     """Populate response-side attributes on a ``chat`` span after the call returns.
 
@@ -228,6 +230,11 @@ def record_chat_response(
     is stringified to preserve precision — OTel attribute values are
     primitives only, and ``Decimal`` doesn't survive the SDK's int/float
     coercion.
+
+    ``avg_logprob`` populates :data:`STEADFAST_LOGPROB_AVG` (reserved
+    Wednesday in ADR-0003 §A.4 and populated Friday per ADR-0005 §A) when
+    the provider exposed per-token logprobs. ``None`` callers leave the
+    attribute absent — downstream consumers treat absence as N/A.
     """
     span.set_attribute(GEN_AI_RESPONSE_MODEL, response_model)
     span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
@@ -239,6 +246,8 @@ def record_chat_response(
         span.set_attribute(GEN_AI_RESPONSE_ID, response_id)
     if cost_usd is not None:
         span.set_attribute(STEADFAST_COST_USD, str(cost_usd))
+    if avg_logprob is not None:
+        span.set_attribute(STEADFAST_LOGPROB_AVG, avg_logprob)
 
 
 @contextmanager

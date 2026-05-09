@@ -116,21 +116,46 @@ This is the dimension where the econometrics background pays off. We treat agent
 
 ### 3.1 Confidence elicitation
 
-The agent is instructed (via a frozen prompt suffix) to report its confidence as a probability in [0, 1] alongside its answer. Both verbalized confidence and (where the API supports it) logprob-derived confidence are recorded.
+The agent is instructed (via a frozen prompt suffix at `prompts/confidence_v1.txt`) to report its confidence as a probability in [0, 1] alongside its answer. Both verbalized confidence and (where the API supports it) logprob-derived confidence are recorded.
 
-**Caveat:** Verbalized confidence is known to be miscalibrated in current LLMs ([Tian et al. 2023](https://arxiv.org/abs/2305.14975)). We measure both verbalized and (where available) token-logprob-derived confidence and report them separately. We do not claim verbalized confidence is the "right" measure — we claim that _measuring_ its calibration is itself useful.
+The prompt requires a structured two-line tail:
+
+```
+ANSWER: <answer-text or the literal word REFUSE>
+CONFIDENCE: <float in [0, 1]>
+```
+
+The structured surface (rather than free-form prose) avoids interposing an LLM judge between the agent's stated confidence and the metric. Refusal is a first-class part of the elicitation contract: the agent writes `REFUSE` on the answer line and the metric layer routes the rep into the refusal-calibration confusion matrix (§3.4) rather than the Brier / ECE / overconfidence pools (§3.2 / §3.3 / §3.5). Verbalized parsing retries once on a missing or out-of-range CONFIDENCE line; persistent parse failure leaves the rep with `confidence=None` and the calibration metric skips it (per ADR-0002 §A.2).
+
+**Logprob-derived confidence presentation (resolves auto-memory Q3, ADR-0005 §A):** logprob-derived confidence is reported in a clearly-marked secondary column with explicit `N/A` cells where the provider's API doesn't expose per-token logprobs. v0.1 coverage:
+
+| Provider  | Verbalized | Logprob |
+| --------- | ---------- | ------- |
+| OpenAI    | yes        | yes (`logprobs=true`) |
+| Anthropic | yes        | N/A (no public per-token logprobs) |
+| Google    | yes        | N/A (deferred to v0.2; experimental support on a subset of Gemini models) |
+
+The implied probability transform from per-token logprobs is `exp(mean(per_token_logprob))` — the geometric mean of per-token probabilities, used as a calibration heuristic by [Kadavath et al. 2022](https://arxiv.org/abs/2207.05221). The leaderboard headline calibration column is verbalized; the logprob column is a secondary reading.
+
+**Caveat:** Verbalized confidence is known to be miscalibrated in current LLMs ([Tian et al. 2023](https://arxiv.org/abs/2305.14975)). We measure both verbalized and (where available) token-logprob-derived confidence and report them separately. We do not claim verbalized confidence is the "right" measure — we claim that _measuring_ its calibration is itself useful. The structured ANSWER/CONFIDENCE tail is itself a prompting intervention; v0.2 may compare elicitation prompts to quantify how much format shape moves the calibration distribution.
 
 ### 3.2 Brier score
 
 **Definition:** Standard Brier score, `mean((forecast - outcome)^2)`, where outcome is 1 if the answer is correct and 0 otherwise.
 
-Reported with bootstrapped 95% CI.
+**Pool of forecasts.** The aggregate (model-level) Brier statistic is computed over the **pooled** set of all (task, rep) squared errors for that model — every answered rep across every task contributes one observation. Refused reps (`AgentResponse.refused = True`) and reps with `confidence=None` are excluded from the pool with a warning. Per-task Brier (one scalar per task, mean over its N=10 reps) is reported as a secondary table for diagnostics.
+
+**Bootstrap.** BCa with 10,000 resamples (per §"Statistical conventions") over the pooled per-rep squared-error array. This is a non-clustered bootstrap; per ADR-0005 §D it understates the CI relative to a cluster bootstrap that resamples tasks and carries their N=10 reps as a unit. The understatement is small at the 5-task pilot scale and larger at the 50-task leaderboard scale; v0.2 introduces a `brier_clustered` metric with a full leaderboard re-run (per §"Versioning" rules).
 
 ### 3.3 Expected Calibration Error (ECE)
 
 **Definition:** Standard ECE with **15 equal-mass bins** (not equal-width — equal-mass is more robust when confidence is concentrated near 1.0, which it always is for current LLMs).
 
-**Computation:** `mean(|bin_accuracy - bin_avg_confidence|)` weighted by bin size.
+**Computation:** Sort all `(confidence, outcome)` pairs across the **same pool used for Brier** (pooled across (task, rep), excluding refused / `confidence=None` reps) by confidence. Partition into 15 contiguous chunks of `floor(N/15)` or `ceil(N/15)` samples each. Compute `Σ_b (n_b / N) · |acc_b − conf_b|` where `acc_b` is the empirical accuracy of bin `b` and `conf_b` is the bin's mean confidence.
+
+**Small-N fallback.** When the pool has fewer than 15 forecasts (which the 5-task pilot can hit if reps fail or refuse), the metric falls back to `floor(N / 3)` bins and surfaces a warning in the result; below 3 bins it returns `None` with a reason (per ADR-0005 §D).
+
+**Bootstrap.** Reported with a bootstrap CI over the same pool; each resample re-bins from scratch.
 
 **Citation:** [Guo et al. 2017](https://arxiv.org/abs/1706.04599); equal-mass binning per [Nixon et al. 2019](https://arxiv.org/abs/1904.01685).
 
@@ -138,11 +163,24 @@ Reported with bootstrapped 95% CI.
 
 **Definition:** On a curated subset of "hard or unanswerable" tasks (10% of the benchmark), measure the rate at which the agent appropriately refuses or hedges.
 
-A refusal is "appropriate" if the task is in the unanswerable set; "inappropriate" otherwise. Reported as a confusion matrix: {refused | answered} × {hard | normal}.
+**Hard-task labeling:** the typed first-class field `Task.difficulty: Literal["normal", "hard"]` (default `"normal"`) drives the metric (per ADR-0005 §E). At least 10% of every published benchmark suite carries `difficulty: "hard"`; tasks marked `"hard"` either have no determinable ground truth from the prompt or are deliberately under-specified, and refusal/hedging is the correct behavior.
+
+**Refusal detection:** the agent emits the literal token `REFUSE` on the answer line of the elicitation tail (§3.1); the parser sets `AgentResponse.refused`. No heuristic refusal regex and no second-LLM-call refusal classifier — see ADR-0005 §B for why.
+
+**Reporting:** 2×2 confusion matrix with each cell carrying its Wilson 95% CI:
+
+|              | hard tasks | normal tasks |
+| ------------ | ---------- | ------------ |
+| **refused**  | TR (good)  | FR (bad)     |
+| **answered** | FA (bad)   | TA (good)    |
+
+Headline scalars: refusal **sensitivity** `TR / (TR + FA)` and refusal **specificity** `TA / (TA + FR)`, each with a Wilson CI. v0.2 may collapse these to an F1-style scalar once leaderboard data shows whether the matrix is too granular for headline display.
 
 ### 3.5 Overconfidence rate
 
-**Definition:** Proportion of incorrect answers where stated confidence ≥ 0.9. A high overconfidence rate is the most dangerous calibration failure for production deployment.
+**Definition:** Proportion of **answered** reps (refused reps excluded; `confidence=None` reps excluded) where the agent was incorrect AND stated confidence ≥ 0.9. A high overconfidence rate is the most dangerous calibration failure for production deployment.
+
+`overconfidence_rate = count(incorrect ∧ confidence ≥ 0.9) / count(answered)`
 
 Reported with Wilson 95% CI.
 

@@ -12,6 +12,55 @@ here.
 
 ### Added
 
+- **Confidence-elicitation contract** (`docs/adr/0005-calibration-and-confidence.md`
+  §B-C): frozen prompt suffix at `prompts/confidence_v1.txt` and
+  `perturbations.confidence.parse_verbalized_confidence` parser. The agent
+  emits a structured `ANSWER:` / `CONFIDENCE:` two-line tail; the parser
+  accepts case-insensitive labels, multi-line answers, percent or decimal
+  confidence forms, and a literal `REFUSE` token on the answer line. The
+  parser uses last-occurrence semantics so prose mentions of either label
+  earlier in the response don't shadow the trailing structured tail.
+- **`SimplePromptingAgent` confidence integration**: when
+  `Task.confidence_suffix` is set, the agent appends the suffix, requests
+  logprobs from clients that support them (`logprobs=True` Steadfast-internal
+  kwarg), parses the response, retries once on parse failure with a stricter
+  reminder, and on second failure soft-fails (rep stays `COMPLETED`,
+  `confidence=None`) so consistency / format / trajectory metrics still
+  consume the rep (per ADR-0005 §C).
+- **`AgentResponse.refused: bool`** and **`AgentResponse.logprob_avg: float | None`**
+  — additive fields driving refusal calibration (METHODOLOGY §3.4) and the
+  secondary logprob-derived calibration column (METHODOLOGY §3.1).
+- **`Task.difficulty: Literal["normal", "hard"]`** — typed first-class
+  field driving refusal calibration. Default `"normal"`; existing tasks
+  pass through unchanged.
+- **`ChatResponse.avg_logprob: float | None`** plus per-provider plumbing:
+  `OpenAIClient` populates the field when `logprobs=True` is requested
+  (averaging chosen-token logprobs from `choice.logprobs.content[i].logprob`);
+  `AnthropicClient` and `GoogleClient` accept the kwarg and silently drop
+  it (per ADR-0005 §A — Anthropic has no public per-token logprobs;
+  Gemini support is deferred to v0.2 to avoid partial coverage confusion).
+- **OTel logprob span attribute**: `record_chat_response` populates the
+  reserved `STEADFAST_LOGPROB_AVG` (`steadfast.logprob_avg`) on the `chat`
+  span when the provider supplied a value; `BaseModelClient.achat` wires
+  the response field through.
+- 38 new tests covering parser happy path / edge cases (multi-line,
+  last-label-wins, refusal token, case-insensitive labels, percent and
+  decimal forms, out-of-range rejection), agent retry-once-then-soft-fail
+  logic, agent passes the `logprobs` kwarg through, and round-tripping of
+  the new `AgentResponse` / `Task` fields.
+
+### Resolved methodology questions
+
+- **Q3 (Anthropic logprob)** — closed by ADR-0005 §A.
+  `docs/METHODOLOGY.md` §3.1 commits to verbalized confidence as the
+  leaderboard headline calibration column with a clearly-marked secondary
+  logprob column carrying explicit `N/A` cells. v0.1 logprob coverage is
+  OpenAI only; Anthropic and Google show `N/A`. Constant
+  `STEADFAST_LOGPROB_AVG` reserved 2026-05-08 in ADR-0003 §A.4 is now
+  populated.
+
+### Earlier — Wednesday + Thursday + Tuesday + Monday
+
 - Project skeleton: package layout, Typer CLI shell (`steadfast --help`,
   `steadfast bench --help`), CI workflow (ruff format check + ruff check +
   `mypy --strict` + pytest), Apache 2.0 license, smoke tests.

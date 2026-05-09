@@ -74,6 +74,12 @@ class ChatResponse(BaseModel):
     public APIs" rule — see ``docs/adr/0002-v01-core-abstractions.md`` Q1.
     Callers should not depend on its structure; it is provider-specific
     debug data, kept on spans and discarded from the run manifest.
+
+    ``avg_logprob`` carries the mean per-token logprob over the response
+    when the provider's API exposes it (per ADR-0005 §A: OpenAI populates;
+    Anthropic and Google leave ``None`` for v0.1). The metric layer applies
+    the ``exp`` transform to derive an implied probability per Kadavath et
+    al. 2022.
     """
 
     text: str
@@ -81,6 +87,7 @@ class ChatResponse(BaseModel):
     cost_usd: Decimal
     model: str
     finish_reason: str | None = None
+    avg_logprob: float | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -176,6 +183,7 @@ class BaseModelClient(ABC):
                             output_tokens=response.usage.output_tokens,
                             finish_reason=response.finish_reason,
                             cost_usd=response.cost_usd,
+                            avg_logprob=response.avg_logprob,
                         )
                         return response
         raise RuntimeError("unreachable: AsyncRetrying with reraise=True returns or raises")
