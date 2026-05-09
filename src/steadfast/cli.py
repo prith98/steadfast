@@ -1,13 +1,21 @@
 """Typer CLI surface.
 
-``steadfast bench`` configures OpenTelemetry tracing per ``--exporter``
-(``console`` | ``otlp`` | ``none``), wraps the run in a ``benchmark``
-span, executes the runner, dispatches the appropriate
-:class:`~steadfast.judges.base.Judge`, and writes the verdict-augmented
-:class:`~steadfast.runner.RunResult` JSON.
+Two invocation shapes:
 
-``--metrics`` is accepted but ignored — the metric dimensions are
-implemented in :mod:`steadfast.metrics`.
+* **Single task / single model** (Tuesday surface, preserved for inner-loop
+  development): ``steadfast bench --task path/to/task.json --model claude-opus-4-7``.
+* **Benchmark / multiple models** (Friday surface, ADR-0005 §G): ``steadfast
+  bench --benchmark customer_support_pilot --models claude-opus-4-7,gpt-5.2,
+  gemini-2.5-pro --metrics consistency,calibration``. The CLI iterates models
+  sequentially (parallelism is per-rep within a model, bounded by the
+  per-client semaphore — adding cross-model parallelism would multiply API
+  spend without improving statistics).
+
+``--metrics`` resolves to per-(model) calibration measurement (Brier / ECE /
+refusal calibration / overconfidence rate per ADR-0005 §D-E) and
+per-(model, task) output-consistency measurement (K=5 paraphrases per
+ADR-0004 §E). The HTML report aggregates across models for side-by-side
+comparison.
 """
 
 from __future__ import annotations
@@ -16,20 +24,48 @@ import asyncio
 import logging
 import sys
 from collections import Counter
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 
 from steadfast import __version__
 from steadfast.agent import Agent, SimplePromptingAgent, Task
 from steadfast.judges import judge_run_result
+from steadfast.metrics.calibration import (
+    CalibrationDimension,
+    CalibrationRep,
+    measure_calibration,
+    reps_from_run_results,
+)
+from steadfast.metrics.consistency import (
+    OutputConsistencyResult,
+    measure_output_consistency,
+)
 from steadfast.models.base import BaseModelClient
+from steadfast.models.openai_client import OpenAIClient
 from steadfast.models.pricing import provider_for_model
+from steadfast.perturbations.confidence import load_confidence_suffix_v1
+from steadfast.reporting.html import write_html_report
 from steadfast.runner import RunResult, run_task
 from steadfast.tracing import benchmark_span, configure_tracing
 from steadfast.tracing.exporters import ExporterKind
+
+# Metric dimensions that ``--metrics`` accepts. Robustness and safety
+# land in week 2; surfacing them as parser errors today (rather than
+# silently warning) matches the v0.1 scope-discipline commitment.
+_VALID_METRICS: Final[frozenset[str]] = frozenset({"consistency", "calibration"})
+
+# Benchmarks ship under ``benchmarks/`` at the repo root. Resolution rule
+# per ADR-0005 §F: ``customer_support_pilot`` → every
+# ``benchmarks/customer_support/pilot_*.json`` file. ``customer_support`` →
+# all task files in the directory. The mapping is intentionally simple so
+# the resolution logic is easy to reason about; v0.2 may add a
+# manifest-driven resolver.
+_BENCHMARK_BASE = Path(__file__).resolve().parents[2] / "benchmarks"
+
 
 app = typer.Typer(
     name="steadfast",
@@ -67,8 +103,6 @@ def _build_client(provider: str) -> BaseModelClient:
 
         return AnthropicClient()
     if provider == "openai":
-        from steadfast.models.openai_client import OpenAIClient
-
         return OpenAIClient()
     if provider == "google":
         from steadfast.models.google_client import GoogleClient
@@ -83,27 +117,127 @@ def _build_rubric_client(target_provider: str, target_client: BaseModelClient) -
     Per ADR-0001, the v0.1 rubric judge is locked to ``gpt-5.2`` on OpenAI.
     If the target model is also on OpenAI we reuse the existing client to
     share its asyncio semaphore (avoids fan-in of N target reps + N judge
-    calls each holding their own slot). For other providers we lazily
-    construct a fresh OpenAI client.
+    calls each holding their own slot).
     """
-    if target_provider == "openai":
+    # Best-effort: reuse the target client when it's the OpenAIClient on
+    # an OpenAI target model (so the asyncio semaphore is shared).
+    # Otherwise build a fresh instance — consistency / rubric judge
+    # type-contracts expect an OpenAIClient regardless.
+    if target_provider == "openai" and isinstance(target_client, OpenAIClient):
         return target_client
-    from steadfast.models.openai_client import OpenAIClient
-
     return OpenAIClient()
+
+
+def resolve_benchmark(name: str) -> list[Path]:
+    """Resolve a benchmark name to a sorted list of task JSON paths.
+
+    ``customer_support_pilot`` → ``benchmarks/customer_support/pilot_*.json``.
+    Other ``<domain>_<suffix>`` names are reserved; v0.1 only ships the
+    pilot. Bare domain names (``customer_support``) resolve to every
+    ``*.json`` task in the domain directory.
+
+    Raises :class:`typer.BadParameter` if no tasks match — silent empty
+    resolution would be worse than a loud failure.
+    """
+    if not _BENCHMARK_BASE.is_dir():
+        raise typer.BadParameter(
+            f"benchmarks directory not found at {_BENCHMARK_BASE} — are you running "
+            "from a Steadfast checkout?"
+        )
+
+    pilot_suffix = "_pilot"
+    if name.endswith(pilot_suffix):
+        domain = name[: -len(pilot_suffix)]
+        domain_dir = _BENCHMARK_BASE / domain
+        glob = "pilot_*.json"
+    else:
+        domain_dir = _BENCHMARK_BASE / name
+        glob = "*.json"
+
+    if not domain_dir.is_dir():
+        raise typer.BadParameter(
+            f"benchmark {name!r} did not resolve to a directory under {_BENCHMARK_BASE}"
+        )
+    paths = sorted(domain_dir.glob(glob))
+    if not paths:
+        raise typer.BadParameter(
+            f"benchmark {name!r} resolved to {domain_dir} but no task files matched {glob!r}"
+        )
+    return paths
+
+
+def parse_metrics(spec: str | None) -> frozenset[str]:
+    """Parse the comma-separated ``--metrics`` argument into a set.
+
+    Empty / None → empty set (no metric dispatch). Unknown metric names
+    raise :class:`typer.BadParameter` with the list of valid dimensions
+    so users discover the surface.
+    """
+    if not spec:
+        return frozenset()
+    requested = {part.strip() for part in spec.split(",") if part.strip()}
+    invalid = requested - _VALID_METRICS
+    if invalid:
+        raise typer.BadParameter(
+            f"unknown metric(s): {sorted(invalid)} — valid: {sorted(_VALID_METRICS)}"
+        )
+    return frozenset(requested)
+
+
+def parse_models(spec: str) -> list[str]:
+    """Parse the comma-separated ``--models`` argument into an ordered list.
+
+    Order matters: the CLI iterates models in the given order, and per-model
+    output directories are named after the model ID, so users get a
+    predictable layout.
+    """
+    models = [m.strip() for m in spec.split(",") if m.strip()]
+    if not models:
+        raise typer.BadParameter("--models must contain at least one model ID")
+    # Validate provider lookup before we start spending money.
+    for m in models:
+        try:
+            provider_for_model(m)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    return models
+
+
+def _apply_confidence_suffix(tasks: Iterable[Task], suffix: str) -> list[Task]:
+    """Inject the frozen confidence-elicitation suffix into every task.
+
+    Per ADR-0002 §A.1, the harness sets ``Task.confidence_suffix``; the
+    agent reads it. Tasks are frozen Pydantic models so we copy with the
+    update applied rather than mutate.
+    """
+    return [t.model_copy(update={"confidence_suffix": suffix}) for t in tasks]
 
 
 @app.command()
 def bench(
     task: Annotated[
         Path | None,
-        typer.Option("--task", help="Path to a single task JSON file."),
+        typer.Option("--task", help="Path to a single task JSON file (single-task surface)."),
+    ] = None,
+    benchmark: Annotated[
+        str | None,
+        typer.Option(
+            "--benchmark",
+            help=(
+                "Curated benchmark suite (e.g. 'customer_support_pilot'). "
+                "Mutually exclusive with --task."
+            ),
+        ),
     ] = None,
     model: Annotated[
         str | None,
+        typer.Option("--model", help="Single target model identifier."),
+    ] = None,
+    models: Annotated[
+        str | None,
         typer.Option(
-            "--model",
-            help="Target model identifier (e.g., claude-opus-4-7, gpt-5.4, gemini-2.5-pro).",
+            "--models",
+            help=("Comma-separated list of target model IDs. Mutually exclusive with --model."),
         ),
     ] = None,
     reps: Annotated[
@@ -117,10 +251,6 @@ def bench(
             help="Directory for results JSON and SQLite checkpoint.",
         ),
     ] = Path("results"),
-    benchmark: Annotated[
-        str | None,
-        typer.Option("--benchmark", help="Curated benchmark suite (not yet supported)."),
-    ] = None,
     agent: Annotated[
         str | None,
         typer.Option(
@@ -132,7 +262,10 @@ def bench(
         str | None,
         typer.Option(
             "--metrics",
-            help="Metric dimensions (not yet wired into the CLI).",
+            help=(
+                "Comma-separated metric dimensions to compute after the run. "
+                "Valid: consistency, calibration."
+            ),
         ),
     ] = None,
     exporter: Annotated[
@@ -148,23 +281,17 @@ def bench(
         ),
     ] = "console",
 ) -> None:
-    """Run the reliability benchmark against a wrapped Agent.
-
-    Single-task wiring: runs the Task at ``--task`` against ``--model``
-    for ``--reps`` iterations using :class:`SimplePromptingAgent`,
-    emits OTel GenAI spans (``benchmark`` → ``task`` → ``rep`` →
-    ``chat {model}``) plus per-rep ``score`` spans, and writes the
-    verdict-augmented ``RunResult`` JSON to ``<output>/<task_id>.json``.
-    """
-    if task is None:
-        typer.echo("error: --task is required.", err=True)
-        raise typer.Exit(2)
-    if model is None:
-        typer.echo("error: --model is required.", err=True)
-        raise typer.Exit(2)
-    if benchmark is not None:
+    """Run the reliability benchmark against one or more wrapped Agents."""
+    # ---- argument validation ----
+    if (task is None) == (benchmark is None):
         typer.echo(
-            "error: --benchmark is not yet supported. Pass --task <path>.",
+            "error: exactly one of --task / --benchmark is required.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (model is None) == (models is None):
+        typer.echo(
+            "error: exactly one of --model / --models is required.",
             err=True,
         )
         raise typer.Exit(2)
@@ -174,8 +301,6 @@ def bench(
             err=True,
         )
         raise typer.Exit(2)
-    if metrics is not None:
-        typer.echo(f"warning: --metrics={metrics!r} is not yet wired; ignoring.", err=True)
     if exporter not in {"console", "otlp", "none"}:
         typer.echo(
             f"error: --exporter={exporter!r} must be one of: console, otlp, none.",
@@ -184,110 +309,197 @@ def bench(
         raise typer.Exit(2)
     exporter_kind: ExporterKind = exporter  # type: ignore[assignment]
 
-    task_obj = Task.model_validate_json(task.read_text())
+    requested_metrics = parse_metrics(metrics)
+    target_models: list[str] = [model] if model is not None else parse_models(models or "")
 
-    try:
-        provider = provider_for_model(model)
-    except ValueError as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(2) from e
-
-    target_client = _build_client(provider)
-    sf_agent = SimplePromptingAgent(client=target_client, model=model)
+    # ---- task resolution ----
+    if task is not None:
+        if not task.is_file():
+            typer.echo(f"error: --task {task} is not a file.", err=True)
+            raise typer.Exit(2)
+        task_paths = [task]
+        benchmark_name = task.stem
+    else:
+        assert benchmark is not None  # narrowed by the (task is None) == (benchmark is None) check
+        task_paths = resolve_benchmark(benchmark)
+        benchmark_name = benchmark
+    tasks: list[Task] = [Task.model_validate_json(p.read_text()) for p in task_paths]
+    if "calibration" in requested_metrics:
+        # Inject the frozen suffix; the agent reads it.
+        tasks = _apply_confidence_suffix(tasks, load_confidence_suffix_v1())
 
     output.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = output / f"{task_obj.id}.sqlite"
 
     typer.echo(
-        f"running task {task_obj.id} on {model} ({provider}) with reps={reps} "
-        f"exporter={exporter}...",
+        f"running benchmark {benchmark_name!r} with {len(tasks)} task(s) on "
+        f"{len(target_models)} model(s); reps={reps} metrics="
+        f"{sorted(requested_metrics) or '[none]'} exporter={exporter}...",
         err=True,
     )
 
-    # Configure tracing once per CLI invocation. The provider is held so we
-    # can flush+shut down at the end (otherwise BatchSpanProcessor may drop
-    # spans on process exit).
     provider_obj = configure_tracing(exporter=exporter_kind)
     try:
-        result = asyncio.run(
-            _run_and_judge(
-                agent=sf_agent,
-                task_obj=task_obj,
-                reps=reps,
-                model=model,
-                checkpoint_path=checkpoint_path,
-                target_provider=provider,
-                target_client=target_client,
+        for target_model in target_models:
+            try:
+                provider_name = provider_for_model(target_model)
+            except ValueError as e:
+                typer.echo(f"error: {e}", err=True)
+                raise typer.Exit(2) from e
+            target_client = _build_client(provider_name)
+            sf_agent = SimplePromptingAgent(client=target_client, model=target_model)
+
+            model_dir = output / _slug(target_model)
+            model_dir.mkdir(parents=True, exist_ok=True)
+
+            run_results = asyncio.run(
+                _run_one_model(
+                    benchmark_name=benchmark_name,
+                    target_model=target_model,
+                    target_provider=provider_name,
+                    target_client=target_client,
+                    sf_agent=sf_agent,
+                    tasks=tasks,
+                    reps=reps,
+                    model_dir=model_dir,
+                    requested_metrics=requested_metrics,
+                )
             )
-        )
+
+            _summarize_model_run(target_model, run_results)
     finally:
-        # force_flush before shutdown so console/OTLP exporters drain on
-        # exit. Both methods are best-effort and tolerant of "no processor".
         provider_obj.force_flush()
         provider_obj.shutdown()
 
-    out_path = output / f"{task_obj.id}.json"
-    out_path.write_text(result.model_dump_json(indent=2))
-
-    statuses = Counter(r.status.value for r in result.reps)
-    total_cost = sum(
-        (
-            Decimal(str(r.response.cost_usd))
-            for r in result.reps
-            if r.response and r.response.cost_usd is not None
-        ),
-        Decimal("0"),
-    )
-
-    judged_reps = [r for r in result.reps if r.verdict is not None]
-    passed_reps = [r for r in judged_reps if r.verdict and r.verdict.passed]
-    if judged_reps:
-        mean_score = sum(r.verdict.score for r in judged_reps if r.verdict) / len(judged_reps)
-        verdict_summary = (
-            f"verdicts={len(passed_reps)}/{len(judged_reps)} passed mean_score={mean_score:.3f}"
+    # ---- HTML report aggregating across all models ----
+    if requested_metrics:
+        report_path = output / "report.html"
+        write_html_report(
+            output_dir=output,
+            benchmark_name=benchmark_name,
+            target_models=target_models,
+            requested_metrics=requested_metrics,
+            report_path=report_path,
         )
-    else:
-        verdict_summary = "verdicts=0/0 (no reps scored)"
-
-    typer.echo(f"wrote {out_path}", err=True)
-    typer.echo(
-        f"run_id={result.run_id} reps={len(result.reps)} "
-        f"statuses={dict(statuses)} cost_usd={total_cost} {verdict_summary}"
-    )
+        typer.echo(f"wrote {report_path}", err=True)
 
 
-async def _run_and_judge(
+async def _run_one_model(
     *,
-    agent: Agent,
-    task_obj: Task,
-    reps: int,
-    model: str,
-    checkpoint_path: Path,
+    benchmark_name: str,
+    target_model: str,
     target_provider: str,
     target_client: BaseModelClient,
-) -> RunResult:
-    """Combined run + judge so they share a single asyncio loop and a single
-    ``benchmark`` span context.
-    """
-    rubric_client: BaseModelClient | None = None
-    if task_obj.judge == "rubric":
-        rubric_client = _build_rubric_client(target_provider, target_client)
+    sf_agent: Agent,
+    tasks: list[Task],
+    reps: int,
+    model_dir: Path,
+    requested_metrics: frozenset[str],
+) -> list[RunResult]:
+    """Execute every task for a single model, judge, and write per-task results.
 
-    with benchmark_span(name=task_obj.id, package_version=__version__):
-        result = await run_task(
-            agent=agent,
-            task=task_obj,
-            reps=reps,
-            model=model,
-            checkpoint_path=checkpoint_path,
-        )
-        await judge_run_result(result, rubric_client=rubric_client)
-    return result
+    After all tasks complete the function dispatches the requested metrics
+    (calibration is per-model, computed over the pooled reps; consistency
+    is per-task, written separately).
+    """
+    rubric_client = _build_rubric_client(target_provider, target_client)
+    run_results: list[RunResult] = []
+    calibration_reps: list[CalibrationRep] = []
+
+    with benchmark_span(name=f"{benchmark_name}/{target_model}", package_version=__version__):
+        for task in tasks:
+            checkpoint_path = model_dir / f"{task.id}.sqlite"
+            result = await run_task(
+                agent=sf_agent,
+                task=task,
+                reps=reps,
+                model=target_model,
+                checkpoint_path=checkpoint_path,
+            )
+            await judge_run_result(result, rubric_client=rubric_client)
+            (model_dir / f"{task.id}.json").write_text(result.model_dump_json(indent=2))
+            run_results.append(result)
+            if "calibration" in requested_metrics:
+                calibration_reps.extend(reps_from_run_results(result.reps, task))
+
+        if "consistency" in requested_metrics:
+            for task, result in zip(tasks, run_results, strict=True):
+                # Consistency uses K=5 paraphrases of the *bare* task input
+                # (without the confidence suffix) — paraphrasing the
+                # elicitation tail itself would conflate output drift with
+                # confidence-prompt drift. Strip the suffix on a copy.
+                bare_task = task.model_copy(update={"confidence_suffix": None})
+                if not isinstance(rubric_client, OpenAIClient):
+                    raise RuntimeError(
+                        "consistency requires an OpenAI infrastructure client per ADR-0001"
+                    )
+                consistency = await measure_output_consistency(
+                    task=bare_task,
+                    agent=sf_agent,
+                    infra_client=rubric_client,
+                )
+                _write_consistency(model_dir, task.id, consistency)
+                # mypy: keep the loop body type-narrow.
+                _ = result
+
+        if "calibration" in requested_metrics and calibration_reps:
+            calibration = measure_calibration(
+                calibration_reps,
+                model=target_model,
+                n_tasks=len(tasks),
+            )
+            _write_calibration(model_dir, calibration)
+
+    return run_results
+
+
+def _summarize_model_run(model: str, results: list[RunResult]) -> None:
+    """Print a one-line summary of a model's run for stdout consumption."""
+    statuses: Counter[str] = Counter()
+    cost = Decimal("0")
+    judged = 0
+    passed = 0
+    for r in results:
+        statuses.update(rec.status.value for rec in r.reps)
+        for rec in r.reps:
+            if rec.response is not None and rec.response.cost_usd is not None:
+                cost += Decimal(str(rec.response.cost_usd))
+            if rec.verdict is not None:
+                judged += 1
+                if rec.verdict.passed:
+                    passed += 1
+    typer.echo(
+        f"model={model} tasks={len(results)} statuses={dict(statuses)} "
+        f"cost_usd={cost} verdicts={passed}/{judged}"
+    )
+
+
+def _slug(model: str) -> str:
+    """Filesystem-safe slug for a model identifier.
+
+    Replaces characters that some shells or filesystems treat specially
+    (slash on POSIX, backslash on Windows, colon on macOS-classic-mode).
+    Model identifiers in v0.1 don't actually contain any of those, but
+    being defensive here costs nothing.
+    """
+    safe = []
+    for ch in model:
+        safe.append(ch if ch.isalnum() or ch in {"-", "_", "."} else "_")
+    return "".join(safe)
+
+
+def _write_consistency(model_dir: Path, task_id: str, result: OutputConsistencyResult) -> None:
+    """Write a per-task consistency JSON to ``<model_dir>/consistency_<task_id>.json``."""
+    path = model_dir / f"consistency_{task_id}.json"
+    path.write_text(result.model_dump_json(indent=2))
+
+
+def _write_calibration(model_dir: Path, result: CalibrationDimension) -> None:
+    """Write the per-model calibration JSON to ``<model_dir>/calibration.json``."""
+    path = model_dir / "calibration.json"
+    path.write_text(result.model_dump_json(indent=2))
 
 
 def main() -> None:
     """Console-script entry point declared in ``pyproject.toml``."""
-    # Default logging at WARNING so judge-failure messages from
-    # judges.judge_run_result are visible without flooding the user.
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     app()

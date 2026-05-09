@@ -74,6 +74,35 @@ here.
   invalid-threshold, end-to-end `measure_calibration` bundling, and
   `reps_from_run_results` filtering.
 
+- **CLI multi-model + benchmark + metrics surface** (ADR-0005 §G):
+  `steadfast bench --benchmark NAME` resolves a benchmark name to every
+  matching `benchmarks/<domain>/pilot_*.json` (or `*.json` for bare
+  domain names); `--models a,b,c` runs sequentially with per-model
+  output subdirectories; `--metrics consistency,calibration` dispatches
+  the corresponding measurement after each model's reps complete and
+  are judged. The single-task / single-model surface (`--task --model`)
+  remains for inner-loop development.
+- **5-task customer-support pilot benchmark** under
+  `benchmarks/customer_support/pilot_*.json` — `pilot_001` (existing
+  trivial seed), `pilot_002` (tier-table lookup), `pilot_003`
+  (conditional-policy application), `pilot_004` (binary eligibility),
+  and `pilot_005` (hard / hedge-appropriate; `difficulty: "hard"`).
+  Mixes exact-match and rubric judges. README documents provenance,
+  judge type, and difficulty distribution.
+- **HTML report** (`reporting.html.write_html_report`) — single-file
+  self-contained HTML with inline CSS. Sections: per-model calibration
+  table (Brier verbalized + logprob, ECE, refusal sens / spec,
+  overconfidence rate; CIs in subdued styling), per-(model, task)
+  consistency table, per-task pass-rate matrix, run header (benchmark
+  name + models + date + package version), reproducibility footer
+  (methodology version + ADR pointers). User-supplied strings are
+  HTML-escaped; missing-data cells render as N/A rather than crashing.
+- 19 new tests covering CLI helpers (`parse_metrics`, `parse_models`,
+  `resolve_benchmark`, `_apply_confidence_suffix`), pilot-task
+  difficulty distribution / ground-truth presence, and HTML report
+  rendering (calibration / consistency / pass-rate sections,
+  missing-files graceful handling, HTML escaping of user input).
+
 ### Resolved methodology questions
 
 - **Q3 (Anthropic logprob)** — closed by ADR-0005 §A.

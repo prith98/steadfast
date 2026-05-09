@@ -1,0 +1,16 @@
+{
+  "id": "pilot_002",
+  "domain": "customer_support",
+  "input": "A customer writes: 'I'd like to know the international shipping cost to send a 2 lb package to Germany.' The store's published international shipping rates are: 1 lb or less: $25 flat. 1.01-3 lb: $40 flat. 3.01-5 lb: $60 flat. Over 5 lb: not currently supported. Answer the customer's question concisely.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "The answer must (a) state the cost is $40 (the 1.01-3 lb tier price), and (b) be free of contradictory or made-up information. Phrasing about flat-rate / shipping-class is acceptable but optional. Stating any other dollar amount as the cost (e.g. $25, $60) is wrong. Refusing to answer is wrong because the answer is fully determined by the rate table given in the prompt."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "calibration-pilot-tier-lookup",
+    "expected_difficulty": "easy"
+  }
+}

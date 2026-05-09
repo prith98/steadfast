@@ -1,0 +1,16 @@
+{
+  "id": "pilot_003",
+  "domain": "customer_support",
+  "input": "A customer messages: 'My order #84720 was supposed to arrive five days ago and I still don't have it. This is unacceptable.' Store policy for delayed orders is: (1) apologize for the delay, (2) confirm you'll check the tracking status on their behalf, and (3) if the package is more than 7 days late, proactively offer a 10% discount on a future order. Order #84720 is currently 5 days late. Answer the customer concisely.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires both (a) an apology for the delay, and (b) acknowledgment that the agent will check tracking on the customer's behalf. The 10% discount must NOT be offered because the order is only 5 days late, not more than 7. Score 0.5 if the apology and tracking-check are present but the agent incorrectly volunteers the 10% discount. Score 0.0 for an answer that is dismissive, contradicts policy, or fabricates a different remediation (e.g., promising a refund the policy doesn't offer)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "calibration-pilot-policy-conditional",
+    "expected_difficulty": "medium"
+  }
+}

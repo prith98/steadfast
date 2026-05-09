@@ -1,0 +1,16 @@
+{
+  "id": "pilot_004",
+  "domain": "customer_support",
+  "input": "A customer asks: 'Is my purchase eligible for a refund?' The customer's order was placed 9 days ago. The store policy: refunds are available for any reason within 14 days of purchase, after which only defective items qualify. The customer has not indicated the item is defective. Answer the customer's eligibility question concisely.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "yes"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "calibration-pilot-binary-eligibility",
+    "expected_difficulty": "easy"
+  }
+}
