@@ -10,6 +10,41 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- **`stats/paired_bootstrap.py`** (`docs/adr/0006-robustness-and-paired-bootstrap.md`
+  §F): paired-delta bootstrap CI primitive for robustness sub-metrics.
+  Resamples per-task delta vector via the existing
+  `stats/bootstrap.bootstrap_ci` (BCa, 10k resamples by default — same
+  defaults as the canonical entry point per METHODOLOGY §"Statistical
+  conventions"). Returns frozen `PairedBootstrapCI` with both arms'
+  means, the delta point estimate, and the bootstrap CI on the delta.
+  Edge cases mirror `stats/bootstrap.py` per ADR-0004 §H: mismatched
+  arm lengths / empty input / `N < 2` raise `ValueError`; zero-variance
+  delta vectors flag `degenerate=True` and collapse the CI to
+  `(delta, delta)`.
+- 11 hand-computed tests covering: identical arms (delta = 0,
+  degenerate); worst-case (clean=1.0 / perturbed=0.0 → delta = -1.0,
+  degenerate at -1.0); the ADR-0006 §F worked example
+  (clean=[1.0,0.8,0.6], perturbed=[0.7,0.5,0.4] → delta ≈ -0.267 with
+  realizable [-0.3, -0.2] CI bounds); seed reproducibility; frozen
+  Pydantic contract; default-inheritance from `stats/bootstrap.py`;
+  edge-case raises.
+
+- **ADR-0006 — Robustness dimension methodology + paired bootstrap.**
+  Bundles every Mon-Fri week-2 methodological choice into one ADR per
+  the ADR-0002 §F precedent. Sections cover: closure of auto-memory Q2
+  (LangGraph trajectory contract — §A); per-perturbation seed strategy
+  (§B); distractor bank generation + freezing (§C); contradiction label
+  schema + rule-based classifier (§D); long-context sigmoid fit + L_50
+  (§E); paired bootstrap as the CI primitive for robustness deltas (§F);
+  v0.2 backlog triage criterion (§G).
+
+- **`docs/WEEK_2.md`** — daily Mon-Fri plan for the robustness
+  dimension and the LangGraph adapter scaffold; modeled on
+  `docs/WEEK_1.md`. Open methodological choices §O.1-§O.7 record the
+  alternatives + rationale that ADR-0006 codifies.
+
 ### Fixed
 
 - **`ExactMatchJudge.canonicalize` hyphenation insensitivity** (clarification
