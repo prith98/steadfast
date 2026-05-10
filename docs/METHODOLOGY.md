@@ -232,6 +232,7 @@ We document these explicitly because honest documentation of limitations is a qu
 - **Static benchmark.** Reliability in production depends on the _distribution_ of inputs, which our benchmark only approximates. Steadfast measures benchmark reliability, which is a proxy for production reliability, not a substitute for it.
 - **Verbalized confidence ≠ true belief.** See §3.1.
 - **N=10 is small.** It's a budget-versus-resolution tradeoff. We report variance honestly rather than pretend N=10 produces tight estimates.
+- **Provider-side empty responses on bursty paraphrased input.** The 2026-05-10 pilot run (Claude / GPT-5.2 / Gemini × 5-task `customer_support_pilot`) showed that Gemini returns an empty `response.text` (without raising) on a non-trivial fraction of paraphrased calls when issued in burst — likely a content-filter or rate-shaping behavior on the provider side. The output-consistency metric absorbs this signal via `OutputConsistencyResult.n_empty_answers`, but degenerate cases (e.g., all K paraphrase responses empty) are tracked in the v0.2 backlog and currently report spurious 1.0 agreement; leaderboard runners should inspect the `n_empty_answers` column on every Gemini row before drawing conclusions. Affects any provider with a similar content-filter surface — Gemini is the only one observed in v0.1 pilots.
 
 ## Versioning
 
