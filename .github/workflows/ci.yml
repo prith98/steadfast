@@ -19,7 +19,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8
+        # ``astral-sh/setup-uv`` publishes moving major tags up to ``v7``;
+        # ``v8`` only has point releases (v8.0.0 / v8.1.0) and no moving
+        # major tag. Pinning to ``v7`` keeps the moving-major convention
+        # used for ``actions/checkout@v6``; v7 already runs on Node 24 (the
+        # 2026-06-02 deadline driver per auto-memory), so the Node 24
+        # objective is satisfied without the unresolvable ``@v8`` tag.
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
