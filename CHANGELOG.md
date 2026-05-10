@@ -25,6 +25,16 @@ here.
   (`auto-memory: project_v02_backlog.md`) — hyphenation alone was
   insufficient; the pilot_001 ground-truth tightening to `"30-day"` is
   the second half of the fix and lands in a follow-up commit.
+- **`benchmarks/customer_support/pilot_001.json` ground truth tightened**
+  from `"30 days"` to `"30-day"`. Paired with the canonicalize hyphen
+  fix above, the new GT canonicalizes to `"30 day"` and matches both
+  hyphenated-singular ("Our store offers a 30-day return window for
+  unopened items.") and plural ("The return window is 30 days.") agent
+  phrasings via substring containment — both forms are semantically
+  equivalent and both should pass. Pre-launch in-place benchmark edit;
+  the README's "tasks immutable once published" rule applies to v0.1
+  launch onward. Provenance row in `benchmarks/customer_support/README.md`
+  updated with the date + reason.
 
 ### Changed
 

@@ -4,7 +4,7 @@
   "input": "A customer asks: 'What is the return window for unopened items at our store?' The store policy is a 30-day return window for unopened items. Answer the customer's question concisely.",
   "ground_truth": {
     "kind": "exact",
-    "value": "30 days"
+    "value": "30-day"
   },
   "judge": "exact_match",
   "metadata": {
