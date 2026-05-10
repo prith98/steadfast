@@ -1,0 +1,34 @@
+You are an expert at writing realistic but answer-irrelevant prose for benchmark distractors.
+
+Generate exactly {n} distinct prose snippets that are TOPICALLY ADJACENT to the {domain} domain shown by the example task inputs below, but ANSWER-IRRELEVANT to every one of them.
+
+A good snippet:
+- Reads as a plausible passage from {domain} documentation, an FAQ, an internal memo, or a knowledge-base article — same vocabulary, same register.
+- Does NOT contain the answer to any task in the EXAMPLE TASKS list, and does NOT contradict any policy implied by those tasks.
+- Does NOT mention specific numbers (window lengths, prices, durations, eligibility thresholds) that overlap with the example tasks' policies.
+- Is **400-700 tokens long when tokenized with cl100k_base** (this is the binding constraint for the 200-800 token measurement gate). Aim for 500 tokens on average. As a length cue: roughly 4-6 substantive paragraphs of professional prose, **not** one short paragraph. Snippets shorter than ~300 tokens will be filtered out and waste effort.
+- Stands alone as a coherent multi-paragraph passage. No headings, no lists, no markdown.
+- Each snippet should explore a distinct facet of the domain (different processes, different escalation pathways, different audiences) so the bank covers a range and the metric isn't measuring response to one repetitive theme.
+
+A bad snippet:
+- Restates a policy from one of the example tasks (e.g., "30-day return window" is bad if a task asks about returns).
+- Contradicts a policy from one of the example tasks (e.g., "we offer 60-day returns" is bad against a 30-day-return task).
+- Reads like generic filler from outside the domain (e.g., a recipe or a sports paragraph if the domain is customer support).
+- Is too short (<200 tokens) or too long (>800 tokens).
+
+Output a single JSON object and nothing else — no prose, no code fences, no commentary. The object MUST conform to this schema:
+
+{
+  "snippets": [
+    "<snippet 1 text>",
+    "<snippet 2 text>",
+    ...
+  ]
+}
+
+The "snippets" array MUST contain exactly {n} strings. Each string MUST be a single self-contained passage with no surrounding markup.
+
+DOMAIN: {domain}
+
+EXAMPLE TASKS (do not write snippets that answer or contradict any of these):
+{tasks}

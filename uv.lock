@@ -1927,6 +1927,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "scipy" },
     { name = "tenacity" },
+    { name = "tiktoken" },
     { name = "typer" },
 ]
 
@@ -1953,6 +1954,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "scipy", specifier = ">=1.13" },
     { name = "tenacity", specifier = ">=8.5" },
+    { name = "tiktoken", specifier = ">=0.7" },
     { name = "typer", specifier = ">=0.12" },
 ]
 

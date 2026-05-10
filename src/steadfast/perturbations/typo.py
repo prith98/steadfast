@@ -1,13 +1,196 @@
 """Typo perturbation — character-level noise.
 
-Per ``docs/METHODOLOGY.md`` §2.1: 5% per-character noise rate, with a
-constraint that no individual word exceeds 25% character corruption (so no
-word is rendered fully unrecognizable). Deterministic given a seed derived
-from the task ID.
+Per ``docs/METHODOLOGY.md`` §2.1: each character is independently a typo
+candidate at rate ``rate`` (default 5%), with a per-word cap of
+``max_word_corruption`` (default 25%) so no single word is rendered fully
+unrecognizable. Deterministic given a seed; per-rep seeding (the standard
+ADR-0006 §B contract via :func:`steadfast.perturbations.derive_seed`) is
+how ten reps over one task produce ten distinct perturbed inputs.
 
-Inspired by NLP robustness literature (CheckList; Ribeiro et al. 2020).
+The mutation is **letter-substitution-only** — the chosen character is
+replaced by a different ASCII letter (or digit, for digit characters)
+of the same case. CheckList (Ribeiro et al. 2020) uses adjacent-keyboard
+substitution; v0.1 simplifies to uniform-letter substitution because the
+robustness signal is "the model handles a noisy input" rather than "the
+model handles a specific keyboard layout's typos." The substitution
+preserves word length, which keeps the per-word cap trivially correct
+and avoids word-boundary shifts that would confound the metric.
 
-Implementation in **week 2**. Stub on Monday.
+References:
+
+* Ribeiro et al. (2020), "Beyond Accuracy: Behavioral Testing of NLP
+  Models with CheckList", *ACL* — typo-perturbation prior art.
+* ADR-0006 §B — seed strategy.
 """
 
 from __future__ import annotations
+
+import random
+import re
+import string
+from typing import Final
+
+DEFAULT_RATE: Final[float] = 0.05
+DEFAULT_MAX_WORD_CORRUPTION: Final[float] = 0.25
+
+# A "word" for typo purposes is a maximal run of letters/digits. Punctuation
+# and whitespace are *not* mutated — character-level noise on the alphanumeric
+# content is the methodology's surface; mangling punctuation would be a
+# different perturbation (and one prior art does not use).
+_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
+
+_LOWER = string.ascii_lowercase
+_UPPER = string.ascii_uppercase
+_DIGITS = string.digits
+
+# Decorrelation salts for the two independent RNGs the algorithm needs
+# (one for position selection, one for substitution alphabet). XORing
+# arbitrary 64-bit constants into the user seed gives two streams that
+# share the user's seed but consume independent draw sequences. Without
+# this decoupling, the position-shuffle's draws would bleed into the
+# substitution stream and entangle replacement-character choice with
+# input length.
+_POS_SEED_SALT: Final[int] = 0x3F7B1E2D4C5A6789
+_SUB_SEED_SALT: Final[int] = 0xA1B2C3D4E5F60789
+
+
+def _substitute(ch: str, rng: random.Random) -> str:
+    """Replace ``ch`` with a different character of the same class.
+
+    Letters are replaced with an ASCII letter of the same case; digits with
+    a different digit. Non-ASCII letters (e.g., 'é', 'ñ') are mapped to a
+    different ASCII lowercase letter — we don't try to maintain script
+    continuity. The methodology calls for character-level noise, not
+    script-preserving noise; treating a non-ASCII letter as "any letter"
+    is the simplest faithful interpretation.
+    """
+    if ch.isdigit():
+        alphabet = _DIGITS
+    elif ch.isupper():
+        alphabet = _UPPER
+    else:
+        # Lowercase letters and any non-ASCII letter both fall here.
+        alphabet = _LOWER
+    # Sample without replacement of the original to guarantee a real
+    # mutation. If ``ch`` is not in ``alphabet`` (e.g., ``ch='é'`` with
+    # alphabet=_LOWER), this is the same as a uniform draw.
+    candidates = alphabet.replace(ch, "") if ch in alphabet else alphabet
+    return rng.choice(candidates)
+
+
+def perturb_typo(
+    text: str,
+    *,
+    rate: float = DEFAULT_RATE,
+    max_word_corruption: float = DEFAULT_MAX_WORD_CORRUPTION,
+    seed: int,
+) -> str:
+    """Return ``text`` with character-level noise injected.
+
+    Parameters
+    ----------
+    text:
+        The input string to perturb.
+    rate:
+        Target fraction of alphanumeric characters to mutate. Per
+        METHODOLOGY §2.1 the default is 0.05 (5%).
+    max_word_corruption:
+        Maximum fraction of alphanumeric characters within any single word
+        that may be mutated. Per METHODOLOGY §2.1 the default is 0.25
+        (25%) — a 4-character word can be hit at most once, an 8-character
+        word at most twice, and so on. ``floor(...)`` semantics: words
+        shorter than ``ceil(1 / max_word_corruption)`` characters (4 chars
+        at the default) cannot be mutated at all, which is the intended
+        behavior — short words contain proportionally too little signal
+        to risk full destruction.
+    seed:
+        Integer seed for the local RNG. Different seeds produce different
+        perturbed outputs; the same seed produces byte-identical output
+        across runs (the function is purely deterministic given seed +
+        inputs). Generated by :func:`steadfast.perturbations.derive_seed`
+        in the metric layer.
+
+    Returns
+    -------
+    str
+        A new string of the **same length** as ``text``. Word boundaries
+        are preserved — only the alphanumeric content of words is
+        mutated, never their separators.
+
+    Raises
+    ------
+    ValueError
+        If ``rate`` is not in [0, 1] or ``max_word_corruption`` is not in
+        [0, 1].
+
+    Notes
+    -----
+    Determinism: position selection and character substitution use
+    *independent* :class:`random.Random` instances seeded from ``seed``
+    via two stable derivations (``(seed, "pos")`` and ``(seed, "sub")``).
+    Without that decoupling, the position-shuffle's draws would bleed into
+    the substitution stream — meaning two calls on different-length
+    inputs but the same seed could pick different replacement characters
+    at any given position. Two calls with identical ``(text, seed)``
+    always produce identical output.
+    """
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError(f"rate must be in [0, 1]; got {rate}")
+    if not 0.0 <= max_word_corruption <= 1.0:
+        raise ValueError(f"max_word_corruption must be in [0, 1]; got {max_word_corruption}")
+    if not text:
+        return text
+
+    # Two decorrelated RNGs: one drives the position shuffle (which
+    # consumes O(N) draws as Fisher-Yates walks the candidate list);
+    # the other drives the substitution alphabet draw at each selected
+    # position. Decoupling via fixed XOR salts means a change in the
+    # candidate-list length (e.g., a longer prompt) doesn't shift the
+    # substitution draws.
+    pos_rng = random.Random(seed ^ _POS_SEED_SALT)
+    sub_rng = random.Random(seed ^ _SUB_SEED_SALT)
+
+    words: list[tuple[int, int]] = [(m.start(), m.end()) for m in _WORD_RE.finditer(text)]
+    if not words:
+        return text
+
+    # Build the candidate-position list: one entry per alphanumeric char,
+    # tagged with its word index for the per-word cap check.
+    candidates: list[tuple[int, int]] = []  # (word_idx, char_idx_in_text)
+    for word_idx, (start, end) in enumerate(words):
+        for char_idx in range(start, end):
+            candidates.append((word_idx, char_idx))
+
+    total_noisable = len(candidates)
+    n_target = round(rate * total_noisable)
+    if n_target == 0:
+        return text
+
+    word_caps = [
+        int(max_word_corruption * (end - start)) for (start, end) in words
+    ]  # floor semantics
+
+    pos_rng.shuffle(candidates)
+    per_word_used = [0] * len(words)
+    selected_indices: list[int] = []
+    for word_idx, char_idx in candidates:
+        if len(selected_indices) >= n_target:
+            break
+        if per_word_used[word_idx] < word_caps[word_idx]:
+            selected_indices.append(char_idx)
+            per_word_used[word_idx] += 1
+
+    # Apply substitutions in left-to-right order so the sub_rng draw
+    # sequence is stable on text content (not on the shuffle order).
+    selected_indices.sort()
+    chars = list(text)
+    for char_idx in selected_indices:
+        chars[char_idx] = _substitute(chars[char_idx], sub_rng)
+    return "".join(chars)
+
+
+__all__ = [
+    "DEFAULT_MAX_WORD_CORRUPTION",
+    "DEFAULT_RATE",
+    "perturb_typo",
+]

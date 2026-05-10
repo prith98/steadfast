@@ -41,6 +41,7 @@ dependencies = [
     "pydantic>=2.9",
     "scipy>=1.13",
     "tenacity>=8.5",
+    "tiktoken>=0.7",
     "typer>=0.12",
 ]
 
