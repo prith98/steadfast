@@ -45,19 +45,33 @@ from steadfast.metrics.consistency import (
     OutputConsistencyResult,
     measure_output_consistency,
 )
+from steadfast.metrics.robustness import (
+    SUPPORTED_KINDS as _SUPPORTED_ROBUSTNESS_KINDS,
+)
+from steadfast.metrics.robustness import (
+    RobustnessDimension,
+    measure_robustness,
+)
 from steadfast.models.base import BaseModelClient
 from steadfast.models.openai_client import OpenAIClient
 from steadfast.models.pricing import provider_for_model
 from steadfast.perturbations.confidence import load_confidence_suffix_v1
+from steadfast.perturbations.distractor import (
+    DistractorBank,
+    load_distractor_bank,
+)
 from steadfast.reporting.html import write_html_report
 from steadfast.runner import RunResult, run_task
 from steadfast.tracing import benchmark_span, configure_tracing
 from steadfast.tracing.exporters import ExporterKind
 
-# Metric dimensions that ``--metrics`` accepts. Robustness and safety
-# land in week 2; surfacing them as parser errors today (rather than
-# silently warning) matches the v0.1 scope-discipline commitment.
-_VALID_METRICS: Final[frozenset[str]] = frozenset({"consistency", "calibration"})
+# Metric dimensions that ``--metrics`` accepts. Safety lands in week 3;
+# surfacing it as a parser error today (rather than silently warning)
+# matches the v0.1 scope-discipline commitment. Robustness shipped
+# 2026-05-12 (week 2 / Tuesday) — typo + distractor sub-metrics; the
+# contradiction and long-context sub-metrics ship later in week 2 and
+# extend ``_SUPPORTED_ROBUSTNESS_KINDS`` from ``metrics.robustness``.
+_VALID_METRICS: Final[frozenset[str]] = frozenset({"consistency", "calibration", "robustness"})
 
 # Benchmarks ship under ``benchmarks/`` at the repo root. Resolution rule
 # per ADR-0005 §F: ``customer_support_pilot`` → every
@@ -203,6 +217,26 @@ def parse_metrics(spec: str | None) -> frozenset[str]:
     return frozenset(requested)
 
 
+def parse_robustness_types(spec: str | None) -> frozenset[str]:
+    """Parse the comma-separated ``--robustness-types`` argument.
+
+    Empty / None → all supported kinds (the methodology-default coverage
+    when ``--metrics robustness`` is on its own). Unknown kinds raise
+    :class:`typer.BadParameter` with the supported set; ``SUPPORTED_KINDS``
+    grows as week 2 ships contradiction (Wed) and long_context (Thu).
+    """
+    if not spec:
+        return frozenset(_SUPPORTED_ROBUSTNESS_KINDS)
+    requested = {part.strip() for part in spec.split(",") if part.strip()}
+    invalid = requested - _SUPPORTED_ROBUSTNESS_KINDS
+    if invalid:
+        raise typer.BadParameter(
+            f"unknown robustness type(s): {sorted(invalid)} — "
+            f"supported: {sorted(_SUPPORTED_ROBUSTNESS_KINDS)}"
+        )
+    return frozenset(requested)
+
+
 def parse_models(spec: str) -> list[str]:
     """Parse the comma-separated ``--models`` argument into an ordered list.
 
@@ -283,7 +317,17 @@ def bench(
             "--metrics",
             help=(
                 "Comma-separated metric dimensions to compute after the run. "
-                "Valid: consistency, calibration."
+                "Valid: consistency, calibration, robustness."
+            ),
+        ),
+    ] = None,
+    robustness_types: Annotated[
+        str | None,
+        typer.Option(
+            "--robustness-types",
+            help=(
+                "Comma-separated robustness sub-metrics. Default: all supported. "
+                "Valid (v0.1 / week 2 / Tuesday): typo, distractor."
             ),
         ),
     ] = None,
@@ -329,6 +373,11 @@ def bench(
     exporter_kind: ExporterKind = exporter  # type: ignore[assignment]
 
     requested_metrics = parse_metrics(metrics)
+    requested_robustness_kinds = (
+        parse_robustness_types(robustness_types)
+        if "robustness" in requested_metrics
+        else frozenset()
+    )
     target_models: list[str] = [model] if model is not None else parse_models(models or "")
 
     # ---- task resolution ----
@@ -381,6 +430,7 @@ def bench(
                     reps=reps,
                     model_dir=model_dir,
                     requested_metrics=requested_metrics,
+                    requested_robustness_kinds=requested_robustness_kinds,
                 )
             )
 
@@ -413,12 +463,14 @@ async def _run_one_model(
     reps: int,
     model_dir: Path,
     requested_metrics: frozenset[str],
+    requested_robustness_kinds: frozenset[str],
 ) -> list[RunResult]:
     """Execute every task for a single model, judge, and write per-task results.
 
     After all tasks complete the function dispatches the requested metrics
     (calibration is per-model, computed over the pooled reps; consistency
-    is per-task, written separately).
+    is per-task, written separately; robustness is per-model with per-task
+    detail nested in a single robustness.json).
     """
     rubric_client = _build_rubric_client(target_provider, target_client)
     run_results: list[RunResult] = []
@@ -468,6 +520,22 @@ async def _run_one_model(
             )
             _write_calibration(model_dir, calibration)
 
+        if "robustness" in requested_metrics:
+            distractor_banks: dict[str, DistractorBank] = {}
+            if "distractor" in requested_robustness_kinds:
+                distractor_banks = _load_distractor_banks_for(tasks)
+            robustness = await measure_robustness(
+                model=target_model,
+                tasks=tasks,
+                clean_run_results=run_results,
+                agent=sf_agent,
+                rubric_client=rubric_client,
+                kinds=requested_robustness_kinds,
+                distractor_banks=distractor_banks,
+                reps=reps,
+            )
+            _write_robustness(model_dir, robustness)
+
     return run_results
 
 
@@ -516,6 +584,36 @@ def _write_calibration(model_dir: Path, result: CalibrationDimension) -> None:
     """Write the per-model calibration JSON to ``<model_dir>/calibration.json``."""
     path = model_dir / "calibration.json"
     path.write_text(result.model_dump_json(indent=2))
+
+
+def _write_robustness(model_dir: Path, result: RobustnessDimension) -> None:
+    """Write the per-model robustness JSON to ``<model_dir>/robustness.json``."""
+    path = model_dir / "robustness.json"
+    path.write_text(result.model_dump_json(indent=2))
+
+
+def _load_distractor_banks_for(tasks: Iterable[Task]) -> dict[str, DistractorBank]:
+    """Load the distractor bank for each distinct domain in ``tasks``.
+
+    Missing-bank tasks are not silently ignored at this layer — the metric
+    layer logs and skips them, but we surface the missing-bank list at
+    CLI time too so the operator sees it before spending money on a run
+    that can't produce distractor signal for some tasks.
+    """
+    domains = {t.domain for t in tasks}
+    banks: dict[str, DistractorBank] = {}
+    for domain in sorted(domains):
+        bank_path = _BENCHMARK_BASE / domain / "distractors_v1.json"
+        try:
+            banks[domain] = load_distractor_bank(bank_path)
+        except FileNotFoundError:
+            typer.echo(
+                f"warning: no distractor bank for domain={domain!r} at {bank_path}; "
+                "distractor robustness will be skipped for tasks in this domain. "
+                "Run scripts/generate_distractor_bank.py to create one.",
+                err=True,
+            )
+    return banks
 
 
 def main() -> None:

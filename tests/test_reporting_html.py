@@ -19,6 +19,11 @@ from steadfast.agent import AgentResponse, Task
 from steadfast.judges.base import Verdict
 from steadfast.metrics.calibration import CalibrationDimension, measure_calibration
 from steadfast.metrics.consistency import OutputConsistencyResult
+from steadfast.metrics.robustness import (
+    RobustnessDimension,
+    RobustnessSubMetricResult,
+    RobustnessTaskResult,
+)
 from steadfast.reporting.html import write_html_report
 from steadfast.runner import RepRecord, RepStatus, RunResult
 from steadfast.stats.bootstrap import BootstrapCI
@@ -207,6 +212,131 @@ def test_html_report_handles_missing_files_gracefully(tmp_path: Path) -> None:
     # Header + footer always render even with no data.
     assert "Steadfast" in contents
     assert "claude-opus-4-7" in contents
+
+
+def _robustness_for(
+    model: str,
+    *,
+    typo_delta: float = -0.10,
+    typo_ci: tuple[float, float] | None = (-0.20, 0.00),
+    distractor_delta: float | None = -0.05,
+    distractor_ci: tuple[float, float] | None = (-0.15, 0.05),
+    n_tasks: int = 5,
+) -> RobustnessDimension:
+    """Build a RobustnessDimension fixture for the HTML render test."""
+
+    def _per_task(task_id: str, kind: str, clean: float, perturbed: float) -> RobustnessTaskResult:
+        return RobustnessTaskResult(
+            task_id=task_id,
+            kind=kind,  # type: ignore[arg-type]
+            n_reps_clean=10,
+            n_reps_perturbed=10,
+            clean_rate=clean,
+            perturbed_rate=perturbed,
+            delta=perturbed - clean,
+            clean_passes=[True] * 10,
+            perturbed_passes=[True] * 10,
+            perturbed_input_previews=["..."] * 10,
+            seed=0,
+        )
+
+    def _sub(
+        kind: str, delta: float | None, ci: tuple[float, float] | None
+    ) -> RobustnessSubMetricResult:
+        return RobustnessSubMetricResult(
+            kind=kind,  # type: ignore[arg-type]
+            n_tasks=n_tasks,
+            clean_mean=0.9 if delta is not None else None,
+            perturbed_mean=(0.9 + delta) if delta is not None else None,
+            delta=delta,
+            delta_ci_lower=ci[0] if ci is not None else None,
+            delta_ci_upper=ci[1] if ci is not None else None,
+            confidence_level=0.95 if ci is not None else None,
+            method="BCa" if ci is not None else None,
+            n_resamples=10000 if ci is not None else None,
+            per_task=[_per_task(f"t{i}", kind, 0.9, 0.9 + (delta or 0.0)) for i in range(n_tasks)],
+            reason=None if delta is not None else "no tasks measured",
+        )
+
+    return RobustnessDimension(
+        model=model,
+        n_tasks=n_tasks,
+        sub_metrics={
+            "typo": _sub("typo", typo_delta, typo_ci),
+            "distractor": _sub("distractor", distractor_delta, distractor_ci),
+        },
+    )
+
+
+def test_html_report_robustness_section_renders(tmp_path: Path) -> None:
+    """End-to-end: a robustness JSON in a model dir → a robustness section."""
+    model = "claude-opus-4-7"
+    model_dir = tmp_path / model.replace("/", "_")
+    model_dir.mkdir(parents=True)
+    dim = _robustness_for(model)
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "<h2>Robustness</h2>" in contents
+    assert "typo" in contents
+    assert "distractor" in contents
+    # Point estimate + CI must render with sign and bracketed bounds.
+    assert "-0.100" in contents
+    assert "[-0.200, +0.000]" in contents
+    # Means line shown for context.
+    assert "clean 0.900" in contents
+
+
+def test_html_report_robustness_handles_na_ci(tmp_path: Path) -> None:
+    """N/A CI (n_tasks=1 single-task surface) renders the point estimate + N/A."""
+    model = "gpt-5.2"
+    model_dir = tmp_path / model.replace("/", "_")
+    model_dir.mkdir(parents=True)
+    dim = _robustness_for(
+        model,
+        typo_delta=-0.10,
+        typo_ci=None,
+        distractor_delta=None,
+        distractor_ci=None,
+    )
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "<h2>Robustness</h2>" in contents
+    # Typo: point estimate present, CI N/A.
+    assert "-0.100" in contents
+    # Distractor: fully None → reason shown.
+    assert "no tasks measured" in contents
+
+
+def test_html_report_robustness_section_skipped_when_no_files(tmp_path: Path) -> None:
+    """Empty workspace → no Robustness section header in the rendered HTML."""
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=["m"],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "<h2>Robustness</h2>" not in contents
 
 
 def test_html_report_escapes_user_strings(tmp_path: Path) -> None:

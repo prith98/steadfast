@@ -43,6 +43,10 @@ from steadfast.metrics.calibration import (
     OverconfidenceResult,
 )
 from steadfast.metrics.consistency import OutputConsistencyResult
+from steadfast.metrics.robustness import (
+    RobustnessDimension,
+    RobustnessSubMetricResult,
+)
 from steadfast.runner import RunResult
 from steadfast.stats.bootstrap import BootstrapCI
 from steadfast.stats.wilson import WilsonCI, wilson_ci
@@ -272,6 +276,82 @@ def _render_consistency_section(
 """
 
 
+def _render_robustness_section(
+    target_models: list[str],
+    output_dir: Path,
+) -> str:
+    """Per-model robustness table — typo / distractor delta with paired-bootstrap CI.
+
+    Each (model, kind) cell shows the cross-task mean delta and its 95%
+    paired-bootstrap CI (per ADR-0006 §F). The clean / perturbed means
+    appear in a subtle line below for context. Single-task runs surface
+    the point estimate with N/A on the CI per ADR-0004 §G's N/A pattern.
+    """
+    rows_by_model: dict[str, RobustnessDimension] = {}
+    kinds_seen: set[str] = set()
+    for model in target_models:
+        dim = _safe_load(output_dir / _slug(model) / "robustness.json", RobustnessDimension)
+        if dim is None:
+            continue
+        rows_by_model[model] = dim
+        kinds_seen.update(dim.sub_metrics.keys())
+
+    if not kinds_seen:
+        return ""
+
+    sorted_kinds = sorted(kinds_seen)
+    header_cols = "".join(f"<th>{_h(kind)}</th>" for kind in sorted_kinds)
+    rows = [f"<tr><th>Model</th>{header_cols}<th>n_tasks</th></tr>"]
+    for model in target_models:
+        dim = rows_by_model.get(model)
+        if dim is None:
+            continue
+        cells = [f"<td><code>{_h(model)}</code></td>"]
+        for kind in sorted_kinds:
+            sub = dim.sub_metrics.get(kind)
+            cells.append(f"<td>{_render_robustness_cell(sub)}</td>")
+        cells.append(f"<td><span class='subtle'>{dim.n_tasks}</span></td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    return f"""
+<section class="section">
+  <h2>Robustness</h2>
+  <p class="subtle">Cross-task paired-bootstrap CI on the success-rate delta
+  (perturbed minus clean) per ADR-0006 §F. Negative delta = brittle to the
+  perturbation; near-zero = robust. Single-task runs report the point estimate
+  with N/A on the CI (paired bootstrap requires n_tasks &ge; 2).</p>
+  <table>{"".join(rows)}</table>
+</section>
+"""
+
+
+def _render_robustness_cell(sub: RobustnessSubMetricResult | None) -> str:
+    if sub is None:
+        return _na()
+    if sub.delta is None:
+        # Includes the n_tasks=0 path; reason carries the diagnostic.
+        if sub.reason:
+            return f"<span class='warn'>{_h(sub.reason)}</span>"
+        return _na()
+    point = f"{sub.delta:+.3f}"
+    if sub.delta_ci_lower is None or sub.delta_ci_upper is None:
+        ci_html = _na()
+    else:
+        degenerate = " degenerate" if sub.degenerate else ""
+        ci_html = (
+            f"<span class='ci'>[{sub.delta_ci_lower:+.3f}, "
+            f"{sub.delta_ci_upper:+.3f}]{degenerate}</span>"
+        )
+    means_line = ""
+    if sub.clean_mean is not None and sub.perturbed_mean is not None:
+        means_line = (
+            f"<br/><span class='subtle'>"
+            f"clean {sub.clean_mean:.3f} → perturbed {sub.perturbed_mean:.3f}"
+            f"</span>"
+        )
+    return f"{point} {ci_html}{means_line}"
+
+
 def _render_pass_rate_section(
     target_models: list[str],
     output_dir: Path,
@@ -281,13 +361,17 @@ def _render_pass_rate_section(
     del benchmark_name  # name is in the header; not needed for this section
     task_ids: set[str] = set()
     pass_rates: dict[str, dict[str, tuple[int, int]]] = {}  # model → task_id → (passed, total)
+    # Result-aggregation files written by the metric layer; never RunResult
+    # candidates. Skipping them at the glob level keeps the per-task pass-
+    # rate logic from accidentally treating dimension JSONs as task runs.
+    aggregate_files = {"calibration.json", "robustness.json"}
     for model in target_models:
         per_task: dict[str, tuple[int, int]] = {}
         model_dir = output_dir / _slug(model)
         if not model_dir.is_dir():
             continue
         for run_path in sorted(model_dir.glob("*.json")):
-            if run_path.name in {"calibration.json"} or run_path.name.startswith("consistency_"):
+            if run_path.name in aggregate_files or run_path.name.startswith("consistency_"):
                 continue
             run_data = _safe_load(run_path, RunResult)
             if run_data is None:
@@ -360,6 +444,9 @@ def _render_footer() -> str:
     verbalized + logprob columns; ECE with 15 equal-mass bins (Nixon et al. 2019); refusal
     confusion matrix on (Task.difficulty, AgentResponse.refused). Verbalized confidence is the
     leaderboard headline; logprob is N/A for Anthropic and Google in v0.1.
+    Robustness follows <code>docs/adr/0006-robustness-and-paired-bootstrap.md</code>:
+    paired-bootstrap CI on the perturbed-minus-clean success-rate delta, resampling tasks
+    with both arms' rep arrays as a unit per ADR-0006 §F.
   </p>
   <p>
     Generated by <code>steadfast {__version__}</code>.
@@ -391,6 +478,7 @@ def write_html_report(
         _render_header(benchmark_name, target_models, requested_metrics),
         _render_calibration_section(target_models, output_dir),
         _render_consistency_section(target_models, output_dir),
+        _render_robustness_section(target_models, output_dir),
         _render_pass_rate_section(target_models, output_dir, benchmark_name),
         _render_footer(),
     ]

@@ -16,6 +16,7 @@ from steadfast.cli import (
     _apply_confidence_suffix,
     parse_metrics,
     parse_models,
+    parse_robustness_types,
     resolve_benchmark,
 )
 
@@ -34,11 +35,41 @@ def test_parse_metrics_valid() -> None:
     assert parse_metrics("calibration,consistency") == {"calibration", "consistency"}
     # Whitespace is tolerated.
     assert parse_metrics(" calibration ,  consistency ") == {"calibration", "consistency"}
+    # Robustness shipped 2026-05-12 (week 2 / Tuesday); now valid.
+    assert parse_metrics("robustness") == {"robustness"}
+    assert parse_metrics("calibration,consistency,robustness") == {
+        "calibration",
+        "consistency",
+        "robustness",
+    }
 
 
 def test_parse_metrics_unknown_raises() -> None:
     with pytest.raises(typer.BadParameter, match="unknown metric"):
-        parse_metrics("calibration,robustness")
+        parse_metrics("calibration,safety")  # safety lands in week 3
+
+
+# ---------------------------------------------------------------------------
+# parse_robustness_types
+# ---------------------------------------------------------------------------
+
+
+def test_parse_robustness_types_default_is_all_supported() -> None:
+    """When --robustness-types is omitted, default to all supported kinds."""
+    assert parse_robustness_types(None) == frozenset({"typo", "distractor"})
+    assert parse_robustness_types("") == frozenset({"typo", "distractor"})
+
+
+def test_parse_robustness_types_subset() -> None:
+    assert parse_robustness_types("typo") == {"typo"}
+    assert parse_robustness_types("typo,distractor") == {"typo", "distractor"}
+    assert parse_robustness_types(" typo ,  distractor ") == {"typo", "distractor"}
+
+
+def test_parse_robustness_types_unknown_raises() -> None:
+    """Wednesday's contradiction kind is not yet shipped — must raise."""
+    with pytest.raises(typer.BadParameter, match="unknown robustness type"):
+        parse_robustness_types("typo,contradiction")
 
 
 # ---------------------------------------------------------------------------
