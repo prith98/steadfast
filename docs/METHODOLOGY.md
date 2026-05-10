@@ -84,27 +84,33 @@ K=5 is intentionally distinct from the N=10 multi-run default: paraphrases are _
 
 For each robustness sub-metric, we measure the **success-rate delta**: success rate on perturbed inputs minus success rate on clean inputs, on the same task set. A robust agent has a small (negative) delta; a brittle one has a large negative delta.
 
-Reported with 95% CI on the delta itself, not the two endpoints separately.
+Reported with 95% CI on the delta itself, not the two endpoints separately. The CI is computed via **paired bootstrap over tasks** (resample tasks with both arms' N=10 reps carried as a unit; statistic is the mean per-task delta) per ADR-0006 §F. The pairing is intrinsic to the metric definition — there is no v0.2 cluster-bootstrap upgrade path because per-task pairing is fundamental, not a tractability shortcut.
+
+**Seed strategy** for all four perturbations (per ADR-0006 §B): deterministic seeds derived from `sha256(f"{task.id}:{kind}:v1")`, with per-rep extension (`:rep{idx}`) where the perturbation has a per-rep stochastic dimension so N=10 reps don't collapse to a single perturbed input.
 
 ### 2.1 Typo robustness
 
-**Perturbation:** Character-level noise injected at rate 5% per character, with the constraint that no individual word is rendered fully unrecognizable (max 25% of characters in any single word). Perturbation is deterministic given a seed.
+**Perturbation:** Character-level noise injected at rate 5% per character, with the constraint that no individual word is rendered fully unrecognizable (max 25% of characters in any single word). Perturbation is deterministic given a seed (per ADR-0006 §B).
 
 **Citation:** Inspired by NLP robustness literature (CheckList, Ribeiro et al. 2020).
 
 ### 2.2 Distractor robustness
 
-**Perturbation:** Append 200–800 tokens of plausible-but-irrelevant context before the actual task. Distractor content is drawn from a curated bank that's topically adjacent but doesn't change the answer.
+**Perturbation:** Prepend 200–800 tokens of plausible-but-irrelevant context before the actual task, separated by a clear delimiter. Distractor content is drawn from a per-domain curated bank that's topically adjacent but doesn't change the answer; the bank is LLM-generated against a frozen prompt, mandatorily human-reviewed before commit, and frozen as `benchmarks/<domain>/distractors_v1.json` (see ADR-0006 §C). One snippet per (task, rep), deterministically chosen by the §B seed.
 
 ### 2.3 Contradiction handling
 
-**Perturbation:** When the agent calls a tool, return a contradictory or partially-corrupted response with probability 0.3. Measure whether the agent (a) detects the contradiction, (b) retries or escalates, (c) hallucinates a coherent answer despite the contradiction.
+**Perturbation:** When the agent calls a tool, return a contradictory or partially-corrupted response with probability 0.3 (per-call seed extends `:tool{idx}` per ADR-0006 §B). Measure whether the agent (a) detects the contradiction, (b) retries or escalates, (c) hallucinates a coherent answer despite the contradiction.
 
-**Reported as a 3-way categorical, not a single scalar.** This is a deliberate choice — collapsing this to one number loses the most interesting signal.
+**Reported as a 3-way categorical, not a single scalar.** This is a deliberate choice — collapsing this to one number loses the most interesting signal. Marginal proportions per cell with Wilson 95% CIs; the three CIs are not jointly bounded (sum-to-1 only at the point estimate).
+
+**Label classifier:** rule-based in v0.1 (REFUSE token, frozen detection-phrase list at `prompts/contradiction_detection_phrases_v1.txt`, trajectory retry detection) per ADR-0006 §D. LLM-judge (`ContradictionRubricJudge`) upgrade queued for v0.2.
+
+**N/A on toolless agents:** the perturbation requires intercepting a tool call; agents whose trajectory is empty for a given task return `ContradictionResult(value=None, reason=…)` per the same N/A pattern trajectory consistency uses (ADR-0004 §G).
 
 ### 2.4 Long-context degradation
 
-**Perturbation:** Pad input with neutral filler to reach context lengths of 4k, 16k, 64k, 128k tokens. Measure success-rate at each length. Reported as a curve plus the slope coefficient from a logistic fit.
+**Perturbation:** Prepend neutral filler (frozen at `prompts/longcontext_filler_v1.txt`) to reach context lengths of 4k, 16k, 64k, 128k tokens, separated by a delimiter. Measure success-rate at each length. Reported as a curve plus the slope coefficient `b` from a sigmoid fit `p(L) = 1 / (1 + exp(-(a + b · log10(L))))` via `scipy.optimize.curve_fit`, alongside the derived half-success length `L_50 = 10^(-a/b)` for interpretability. Both `b` and `L_50` carry bootstrap CIs (resample tasks, refit per resample). Convergence-failure fallback: `slope = L_50 = None` and the empirical curve is reported alone (per ADR-0006 §E). The `log10(L)` x-axis is motivated by Liu et al. 2024 (*Lost in the Middle*).
 
 ---
 
