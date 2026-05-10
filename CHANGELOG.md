@@ -10,6 +10,14 @@ here.
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub Actions bumped to Node-24-compatible majors**:
+  `actions/checkout@v4 → v6` and `astral-sh/setup-uv@v3 → v8` in
+  `.github/workflows/ci.yml`. Pre-emptive of GitHub forcing Node 24 by
+  default on 2026-06-02 (Node 20 removed from runners 2026-09-16); the
+  v4 / v3 majors used Node 20.
+
 ### Added
 
 - **Confidence-elicitation contract** (`docs/adr/0005-calibration-and-confidence.md`
