@@ -12,6 +12,87 @@ here.
 
 ### Added
 
+- **Robustness dimension — typo + distractor sub-metrics**
+  (`docs/METHODOLOGY.md` §2.1-§2.2 / ADR-0006). New
+  `src/steadfast/metrics/robustness.py` exposing
+  `RobustnessTaskResult`, `RobustnessSubMetricResult`, `RobustnessDimension`,
+  `measure_typo_robustness`, `measure_distractor_robustness`, and the
+  bundling `measure_robustness` wrapper. The clean arm reuses the
+  per-task `RunResult` from the main bench loop (no re-spend); the
+  perturbed arm runs N=10 distinct perturbations through `agent.arun`
+  via `asyncio.gather` (mirrors `measure_output_consistency` for
+  multi-input metric paths). Cross-task aggregation calls
+  `paired_bootstrap_ci` from `stats/paired_bootstrap.py`. Single-task
+  invocations (`--task pilot_001`) populate the point estimate but
+  N/A the CI with a `reason` field per ADR-0004 §G.
+- **Per-rep distinct perturbation seeds** (ADR-0006 §B). New
+  `src/steadfast/perturbations/_seed.py::derive_seed(task_id, kind, *,
+  rep_idx=None, tool_call_idx=None)` exposing the
+  `sha256(f"{task_id}:{kind}:v1[:rep{idx}]")[:8]` derivation as a
+  shared helper across the four robustness perturbations. Re-exported
+  at `steadfast.perturbations.derive_seed`.
+- **`perturbations/typo.py::perturb_typo`** — character-level
+  substitution at the 5%-rate / 25%-per-word-cap defaults from
+  METHODOLOGY §2.1. Substitution-only (no insert / delete / swap) so
+  word lengths are preserved and the per-word cap is trivially correct.
+  Cites Ribeiro et al. 2020 (CheckList) per METHODOLOGY §2.1.
+- **`perturbations/distractor.py`** — `DistractorBank` /
+  `DistractorSnippet` Pydantic models, `load_distractor_bank` /
+  `write_distractor_bank` IO helpers, and the
+  `pick_distractor` / `apply_distractor` / `perturb_distractor`
+  surface. Token-count gating (200-800 token range per METHODOLOGY
+  §2.2) walks the bank deterministically from `seed % len(bank)`;
+  `DistractorBankExhaustedError` is raised loudly if no snippet fits.
+  Frozen delimiter contract: `--- background reading --- … --- task ---`.
+- **`scripts/generate_distractor_bank.py`** — one-shot operator
+  script per ADR-0006 §C. Reads tasks in a domain, calls the
+  generator (GPT-5.2, ADR-0001 lock) at temperature 0.7 with the
+  frozen prompt at `prompts/distractor_bank_v1.txt`, tokenizes via
+  `tiktoken cl100k_base`, dedupes, and writes
+  `benchmarks/<domain>/distractors_v1.draft.json`. Manual review pass
+  + `mv` to `distractors_v1.json` is the methodology gate before the
+  metric picks up the bank. Cost ~$0.50 per domain.
+- **`prompts/distractor_bank_v1.txt`** — frozen generator prompt.
+  `{n}` / `{domain}` / `{tasks}` placeholders; demands JSON-only
+  output; gives the model a corpus of in-domain tasks to avoid
+  contradicting.
+- **CLI surface** — `--metrics` accepts `robustness`; new
+  `--robustness-types` Option (default: all supported kinds; v0.1 /
+  Tuesday surface = `typo,distractor`). New `parse_robustness_types`
+  helper. `_run_one_model` dispatches a per-model robustness pass
+  after the task loop and writes `<model_dir>/robustness.json`.
+  Distractor banks are loaded per-domain at CLI time; missing-bank
+  domains warn-and-skip rather than aborting.
+- **HTML report robustness section** (`reporting/html.py`). New
+  `_render_robustness_section` renders a per-(model, kind) table with
+  the cross-task delta + paired-bootstrap CI; clean / perturbed
+  endpoint means appear in a subtle line for context. Single-task /
+  N/A surfaces render the point estimate with N/A on the CI. Footer
+  amended with an ADR-0006 reference.
+- **Tests**: `tests/test_perturbations_typo.py` (12 tests — determinism,
+  per-word cap floor semantics, length / boundary preservation, rate
+  convergence, edge cases); `tests/test_perturbations_distractor.py`
+  (12 tests — pick determinism, gating walk, exhaustion,
+  delimiter contract, JSON round-trip); `tests/test_metrics_robustness.py`
+  (15 tests — perturbed-arm fanout, delta = 0 / -1 / partial fixtures,
+  n_tasks=1 N/A surface, cross-task aggregation with non-degenerate CI,
+  distractor missing-bank skip, kind subsetting, unknown-kind raise).
+  Plus a robustness section to `tests/test_reporting_html.py` and a
+  `parse_robustness_types` block to `tests/test_cli.py`.
+- **`tiktoken` direct dependency** — promoted from transitive (was
+  pulled in via the `agentevals` chain) to declared. Justified per
+  CLAUDE.md "dependency tree as quality signal": tiktoken is small
+  (~1 MB), already in the OpenAI ecosystem we depend on, and required
+  by the bank generator's token-count precomputation per ADR-0006 §C.
+- **Customer-support distractor bank draft** at
+  `benchmarks/customer_support/distractors_v1.draft.json` (38 snippets,
+  token range 270-430, generator: gpt-5.2 at temperature 0.7). Carries
+  `review_status: "draft"`; does **not** load via
+  `load_distractor_bank` until an operator audits the snippets for
+  ground-truth contradictions vs. the pilot tasks, edits the field to
+  `"reviewed"`, and renames to `distractors_v1.json` per ADR-0006 §C.
+  The metric's distractor sub-metric will skip-with-warning until that
+  operator gate clears.
 - **`stats/paired_bootstrap.py`** (`docs/adr/0006-robustness-and-paired-bootstrap.md`
   §F): paired-delta bootstrap CI primitive for robustness sub-metrics.
   Resamples per-task delta vector via the existing
@@ -74,12 +155,16 @@ here.
 ### Changed
 
 - **GitHub Actions bumped to Node-24-compatible majors**:
-  `actions/checkout@v4 → v6` and `astral-sh/setup-uv@v3 → v8` in
+  `actions/checkout@v4 → v6` and `astral-sh/setup-uv@v3 → v7` in
   `.github/workflows/ci.yml`. Pre-emptive of GitHub forcing Node 24 by
   default on 2026-06-02 (Node 20 removed from runners 2026-09-16); the
-  v4 / v3 majors used Node 20.
+  v4 / v3 majors used Node 20. Note: the original 2026-05-10 push of
+  this bump used `setup-uv@v8`, which fails to resolve because
+  `astral-sh/setup-uv` only publishes moving majors up to `v7` (v8 has
+  point releases only). Corrected here to `@v7`, which already runs on
+  Node 24 and satisfies the deadline.
 
-### Added
+### Added (week 1 calibration — earlier in the same Unreleased block)
 
 - **Confidence-elicitation contract** (`docs/adr/0005-calibration-and-confidence.md`
   §B-C): frozen prompt suffix at `prompts/confidence_v1.txt` and

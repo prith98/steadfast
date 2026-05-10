@@ -102,9 +102,13 @@ computed at `:v1`.
 For the contradiction perturbation, which decides whether to corrupt
 on a per-tool-call basis (METHODOLOGY §2.3: "with probability 0.3"),
 the per-call seed extends to
-`sha256(f"{task.id}:contradiction:v1:{tool_call_idx}".encode())[:8]`
+`sha256(f"{task.id}:contradiction:v1:tool{tool_call_idx}".encode())[:8]`
 so reordering tool calls on the agent side doesn't shift the
-corruption pattern across calls.
+corruption pattern across calls. The `tool` prefix matches the
+`rep{rep_idx}` style used for the per-rep extension below — both
+extensions are tagged with their kind so the suffix is self-describing
+and the two extensions can in principle stack (a per-rep contradiction
+perturbation would suffix `:rep{i}:tool{j}`).
 
 The seed also rides on the rep itself when the perturbation has a
 per-rep stochastic dimension (e.g., the typo perturbation's character-
