@@ -68,6 +68,17 @@ def test_verdict_is_frozen() -> None:
         ("\uff13\uff10 days", "30 days"),
         # casefold collapses German eszett (U+00DF) to "ss".
         ("Stra\u00dfe", "strasse"),
+        # Hyphenation clarification fix 2026-05-11 (WEEK_2.md \u00a7O.1):
+        # ASCII hyphens between word characters become a single space.
+        ("30-day", "30 day"),
+        ("30-Day", "30 day"),
+        ("multi-step process", "multi step process"),
+        ("state-of-the-art", "state of the art"),
+        # Hyphen NOT between word characters is preserved (leading/
+        # trailing dash, double-hyphen em-dash substitute).
+        ("-foo", "-foo"),
+        ("foo-", "foo-"),
+        ("foo--bar", "foo--bar"),
     ],
 )
 def test_canonicalize_rules(raw: str, expected: str) -> None:
@@ -78,6 +89,18 @@ def test_canonicalize_idempotent_punctuation_strip() -> None:
     """Repeated trailing punctuation is fully stripped."""
     assert canonicalize("answer.!?") == "answer"
     assert canonicalize("answer; .  ") == "answer"
+
+
+def test_canonicalize_hyphen_then_whitespace_collapse() -> None:
+    """Hyphen-replacement runs before whitespace collapse.
+
+    Without the order guarantee, ``"30-day  return"`` would become
+    ``"30 day  return"`` and then collapse \u2014 which is what we want, but
+    the test pins the contract so a future refactor that reorders the
+    rules can't silently break it.
+    """
+    assert canonicalize("30-day  return") == "30 day return"
+    assert canonicalize("foo-bar\tbaz") == "foo bar baz"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +135,37 @@ def test_exact_match_judge_pass_fail(answer: str, passed: bool) -> None:
     verdict = asyncio.run(judge.ajudge(task, AgentResponse(answer=answer)))
     assert verdict.passed is passed
     assert verdict.score == (1.0 if passed else 0.0)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # The actual GPT-5.2 response text from the 2026-05-10 pilot run on
+        # `pilot_001`. Pre-fix this scored 0/10 against ground truth
+        # `"30 days"`; post-fix (canonicalize hyphens, ground truth tightened
+        # to `"30-day"` which canonicalizes to `"30 day"`) it scores 10/10.
+        "Our store offers a 30-day return window for unopened items.",
+        # Plural form — also passes because `"30 day"` is a substring of
+        # `"30 days"` (the trailing s on the answer doesn't break containment).
+        "The return window is 30 days for unopened items.",
+        # Unhyphenated singular form.
+        "Returns accepted within 30 day window.",
+    ],
+)
+def test_exact_match_judge_pilot_001_hyphenation_regression(answer: str) -> None:
+    """Regression for the 2026-05-10 pilot-run finding (WEEK_2.md §O.1).
+
+    Ground truth `"30-day"` canonicalizes to `"30 day"`. The hyphenation
+    canonicalize fix means the singular hyphen-adjective form (which is
+    how GPT-5.2 phrased its answer 10/10 reps) now matches; the plural
+    form continues to match via substring containment. The mismatch case
+    (different number of days) still fails — see the negative-case
+    parametrize in :func:`test_exact_match_judge_pass_fail`.
+    """
+    task = _exact_task("30-day")
+    verdict = asyncio.run(ExactMatchJudge().ajudge(task, AgentResponse(answer=answer)))
+    assert verdict.passed is True
+    assert verdict.score == 1.0
 
 
 def test_exact_match_judge_rejects_missing_ground_truth() -> None:

@@ -10,6 +10,22 @@ here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ExactMatchJudge.canonicalize` hyphenation insensitivity** (clarification
+  fix per METHODOLOGY §"Versioning"; not a metric-version event because the
+  original ADR-0003 §B.3 substring-containment intent was hyphenation-
+  insensitive). New rule between casefold and whitespace-collapse: ASCII
+  hyphens between word characters are replaced with a single space, so
+  "30-day" canonicalizes to "30 day" and a ground truth phrased as
+  "30-day" matches both hyphenated singular ("Our store offers a 30-day
+  return window") and plural ("The return window is 30 days") agent
+  answers. Surfaces the regression test using GPT-5.2's actual 2026-05-10
+  `pilot_001` response text. Item 1 of the v0.2 backlog
+  (`auto-memory: project_v02_backlog.md`) — hyphenation alone was
+  insufficient; the pilot_001 ground-truth tightening to `"30-day"` is
+  the second half of the fix and lands in a follow-up commit.
+
 ### Changed
 
 - **GitHub Actions bumped to Node-24-compatible majors**:
