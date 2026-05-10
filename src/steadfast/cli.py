@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections import Counter
 from collections.abc import Iterable
@@ -96,6 +97,24 @@ def _root(
     """Steadfast — reliability benchmarking for AI agents."""
 
 
+def _build_openai_client() -> OpenAIClient:
+    """Construct an :class:`OpenAIClient` with rate-limit-tier env knobs applied.
+
+    ``STEADFAST_OPENAI_MAX_CONCURRENT`` and ``STEADFAST_OPENAI_MAX_RETRIES``
+    override the constructor defaults (5 / 5). Lower these for accounts on a
+    low rate-limit tier — gpt-5.2 on the free tier is 3 RPM, which collides
+    with the default 5-way concurrent fanout (paraphrase generator +
+    validator + pairwise rubric + outcome judge). Setting
+    ``STEADFAST_OPENAI_MAX_CONCURRENT=1`` and ``STEADFAST_OPENAI_MAX_RETRIES=10``
+    makes the run finish on the free tier at the cost of wall-clock time;
+    the existing tenacity exponential backoff (capped at 30s) covers the
+    20s rate-limit window.
+    """
+    max_concurrent = int(os.environ.get("STEADFAST_OPENAI_MAX_CONCURRENT", "5"))
+    max_retries = int(os.environ.get("STEADFAST_OPENAI_MAX_RETRIES", "5"))
+    return OpenAIClient(max_concurrent=max_concurrent, max_retries=max_retries)
+
+
 def _build_client(provider: str) -> BaseModelClient:
     """Instantiate the right :class:`BaseModelClient` for a provider name."""
     if provider == "anthropic":
@@ -103,7 +122,7 @@ def _build_client(provider: str) -> BaseModelClient:
 
         return AnthropicClient()
     if provider == "openai":
-        return OpenAIClient()
+        return _build_openai_client()
     if provider == "google":
         from steadfast.models.google_client import GoogleClient
 
@@ -125,7 +144,7 @@ def _build_rubric_client(target_provider: str, target_client: BaseModelClient) -
     # type-contracts expect an OpenAIClient regardless.
     if target_provider == "openai" and isinstance(target_client, OpenAIClient):
         return target_client
-    return OpenAIClient()
+    return _build_openai_client()
 
 
 def resolve_benchmark(name: str) -> list[Path]:

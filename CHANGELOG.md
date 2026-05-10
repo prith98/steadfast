@@ -103,6 +103,27 @@ here.
   rendering (calibration / consistency / pass-rate sections,
   missing-files graceful handling, HTML escaping of user input).
 
+- **OpenAI rate-limit-tier env knobs**: `STEADFAST_OPENAI_MAX_CONCURRENT`
+  and `STEADFAST_OPENAI_MAX_RETRIES` override the `OpenAIClient`
+  constructor defaults (5 / 5). The gpt-5.2 free tier is 3 RPM, which
+  collides with the default 5-way concurrent fanout (paraphrase
+  generator + validator + pairwise rubric + outcome judge); setting
+  `MAX_CONCURRENT=1` and `MAX_RETRIES=10` makes the run finish on the
+  free tier at the cost of wall-clock time. Documented in
+  `.env.example`.
+- **Empty-answer handling in `measure_output_consistency`**: real-world
+  Gemini target runs hit safety filters on paraphrased inputs and
+  return empty `response.text`; OpenAI's embedding endpoint rejects
+  empty strings (HTTP 400) and crashed the entire consistency
+  measurement. Empty answers are now substituted with a placeholder
+  `"(no answer)"` before the embedding / rubric calls; the count
+  rides on `OutputConsistencyResult.n_empty_answers` so the report
+  surfaces the target-model issue. Known limitation for v0.2: when
+  `n_empty == k` (all paraphrase responses empty), the metric currently
+  reports spurious 1.0 agreement (all placeholders are identical) —
+  fix is to return `None` with a `reason` field; deferred so v0.1
+  schema stays compatible with the Friday pilot report.
+
 ### Resolved methodology questions
 
 - **Q3 (Anthropic logprob)** — closed by ADR-0005 §A.

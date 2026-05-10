@@ -47,6 +47,15 @@ CONSISTENCY_RUBRIC_PROMPT_VERSION: Final[str] = "v1"
 DEFAULT_RUBRIC_JUDGE_MODEL: Final[str] = "gpt-5.2"
 LIKERT_MAX: Final[int] = 4
 
+# Substituted in for empty agent answers before embedding / rubric calls.
+# OpenAI's embedding endpoint rejects empty-string inputs (HTTP 400
+# "input cannot be an empty string"), so a metric over a Gemini run that
+# hits a safety filter would crash without this sentinel. The rubric
+# judge and the embedding model will both score the placeholder low
+# against any real answer, which is the correct calibration signal — an
+# empty response from the agent is *not* consistent with a real one.
+_EMPTY_ANSWER_PLACEHOLDER: Final[str] = "(no answer)"
+
 _RUBRIC_PLACEHOLDER_RE = re.compile(r"\{(task_input|answer_a|answer_b)\}")
 
 
@@ -56,7 +65,16 @@ _RUBRIC_PLACEHOLDER_RE = re.compile(r"\{(task_input|answer_a|answer_b)\}")
 
 
 class OutputConsistencyResult(BaseModel):
-    """Per-task output-consistency measurement (METHODOLOGY §1.1)."""
+    """Per-task output-consistency measurement (METHODOLOGY §1.1).
+
+    ``n_empty_answers`` counts how many of the K paraphrase responses were
+    empty (e.g., model safety filter or empty content). Empty answers are
+    substituted with a placeholder before the embedding call (OpenAI's
+    embedding endpoint rejects ``""``); rubric and cosine scores against
+    the placeholder are correctly low, which the bootstrap CI absorbs.
+    Surfaced in the report so a high count signals a target-model issue
+    rather than a consistency-metric issue.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -69,6 +87,7 @@ class OutputConsistencyResult(BaseModel):
     mean_embedding_cosine: float
     rubric_ci: BootstrapCI
     embedding_ci: BootstrapCI
+    n_empty_answers: int = 0
     rubric_prompt_version: str = CONSISTENCY_RUBRIC_PROMPT_VERSION
     embedding_model: str
     rubric_model: str
@@ -203,7 +222,18 @@ async def measure_output_consistency(
         task.model_copy(update={"input": paraphrase}) for paraphrase in paraphrase_set.paraphrases
     ]
     responses = await asyncio.gather(*(agent.arun(t) for t in paraphrase_tasks))
-    answers = [r.answer for r in responses]
+    raw_answers = [r.answer for r in responses]
+
+    # Substitute empty answers with a placeholder. OpenAI's embedding
+    # endpoint rejects empty strings (HTTP 400), so even one empty Gemini
+    # safety-filtered response would crash the whole consistency
+    # measurement. The placeholder scores low against any real answer in
+    # both the rubric and the cosine pass — that's the correct
+    # calibration signal: an empty response is *not* consistent with a
+    # real one. ``n_empty_answers`` rides on the result so the report
+    # surfaces high-empty cases as a target-model issue.
+    n_empty_answers = sum(1 for a in raw_answers if not a.strip())
+    answers = [a if a.strip() else _EMPTY_ANSWER_PLACEHOLDER for a in raw_answers]
 
     # Concurrent across pairs — the model client's semaphore bounds the
     # fan-out so this can't exceed the configured per-client concurrency.
@@ -240,6 +270,7 @@ async def measure_output_consistency(
         mean_embedding_cosine=embedding_ci.point_estimate,
         rubric_ci=rubric_ci,
         embedding_ci=embedding_ci,
+        n_empty_answers=n_empty_answers,
         embedding_model=embedding_model,
         rubric_model=rubric_model,
     )

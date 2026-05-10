@@ -393,3 +393,38 @@ def test_output_consistency_invalid_k_raises() -> None:
         asyncio.run(
             measure_output_consistency(task=task, agent=agent, infra_client=infra, k=2, seed=0)
         )
+
+
+def test_output_consistency_substitutes_empty_answers() -> None:
+    """Empty agent responses must not crash the embedding call.
+
+    OpenAI's embedding endpoint rejects ``input=[""]`` with HTTP 400.
+    Real-world Gemini target runs hit safety filters that produce empty
+    text on hard prompts; the metric must substitute a placeholder so
+    the bootstrap CI absorbs the empty-response signal rather than
+    crashing the whole run.
+    """
+    paraphrases = ["q1", "q2", "q3"]
+    chat_outputs = [
+        '{"paraphrases": ["q1", "q2", "q3"]}',
+        '{"equivalent": true, "reason": "ok"}',
+        '{"equivalent": true, "reason": "ok"}',
+        '{"equivalent": true, "reason": "ok"}',
+        '{"score": 1, "reason": "low"}',
+        '{"score": 1, "reason": "low"}',
+        '{"score": 4, "reason": "high"}',
+    ]
+    embeddings = [[1.0, 0.0, 0.0]] * 3
+    infra = _StubInfraClient(chat_outputs=chat_outputs, embeddings=embeddings)
+    # Agent returns "" for q1 (simulating a safety-filter block) and real
+    # answers for q2, q3.
+    agent = _StubAgent({"q1": "", "q2": "real answer", "q3": "real answer"})
+    task = Task(id="t1", domain="d", input="original?")
+
+    result = asyncio.run(
+        measure_output_consistency(task=task, agent=agent, infra_client=infra, k=3, seed=0)
+    )
+    assert result.n_empty_answers == 1
+    # The metric still returned a value rather than crashing.
+    assert result.mean_rubric is not None
+    assert result.mean_embedding_cosine is not None
