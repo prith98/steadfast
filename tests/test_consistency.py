@@ -404,7 +404,6 @@ def test_output_consistency_substitutes_empty_answers() -> None:
     the bootstrap CI absorbs the empty-response signal rather than
     crashing the whole run.
     """
-    paraphrases = ["q1", "q2", "q3"]
     chat_outputs = [
         '{"paraphrases": ["q1", "q2", "q3"]}',
         '{"equivalent": true, "reason": "ok"}',
