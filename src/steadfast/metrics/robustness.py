@@ -57,7 +57,6 @@ from scipy.optimize import OptimizeWarning, curve_fit
 
 from steadfast.agent import Agent, AgentResponse, Task, ToolCall
 from steadfast.judges import build_default_judge
-from steadfast.judges.base import JudgeError
 from steadfast.models.base import BaseModelClient
 from steadfast.perturbations import derive_seed
 from steadfast.perturbations.contradiction import (
@@ -459,7 +458,14 @@ async def _measure_per_task(
             continue
         try:
             verdict = await judge.ajudge(task, raw)
-        except JudgeError as exc:
+        except Exception as exc:
+            # Broaden beyond JudgeError to also absorb transient
+            # underlying-LLM failures the rubric judge can leak through
+            # (e.g., an OpenAI rate-limit cascade after tenacity retries
+            # are exhausted). Per the same fail-soft contract as the
+            # arun path above: a failed rep drops out of the denominator
+            # rather than killing the whole metric. Catches both the
+            # JudgeError surface and provider-SDK exceptions.
             n_judge_failures += 1
             _log.warning(
                 "judge failed on perturbed rep for task=%s kind=%s rep=%d: %s — excluding from arm",
@@ -1453,7 +1459,11 @@ async def measure_long_context_degradation(
                     continue
                 try:
                     verdict = await judge.ajudge(task, raw)
-                except JudgeError as exc:
+                except Exception as exc:
+                    # See `_measure_per_task` rationale: catch broader
+                    # than JudgeError so rate-limit cascades on the
+                    # rubric judge don't crash the long-context tier
+                    # loop mid-run.
                     n_judge_failures += 1
                     _log.warning(
                         "judge failed on long_context rep for task=%s tier=%d rep=%d: %s",

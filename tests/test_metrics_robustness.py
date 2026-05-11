@@ -1274,6 +1274,63 @@ def test_measure_long_context_end_to_end_step_curve() -> None:
     assert result.slope < 0
 
 
+def test_measure_long_context_judge_failure_does_not_crash_metric() -> None:
+    """A non-JudgeError exception from the rubric judge drops the rep, not the metric.
+
+    Regression for the 2026-05-11 pilot crash: the rubric judge raised
+    an OpenAI ``RateLimitError`` (not a ``JudgeError``) after tenacity
+    retries were exhausted; the long-context tier loop's ``except
+    JudgeError`` only caught JudgeError, letting the rate-limit
+    exception propagate up and crash the whole metric mid-run. The fix
+    broadened the except clause to ``Exception``; this test pins that
+    behavior.
+    """
+
+    class _FlakyJudgeRubricTask(Task):
+        """Task that uses 'rubric' judge so the test exercises the judge path."""
+
+    flaky_task = Task(
+        id="t_flaky",
+        domain="d",
+        input="Q",
+        ground_truth=GroundTruth(kind="rubric", value="any"),
+        judge="rubric",
+    )
+
+    class _RaisingRubricClient:
+        """Stub that raises a non-JudgeError exception on every call.
+
+        Mirrors the production failure mode where an
+        OpenAI ``RateLimitError`` leaks past the tenacity layer.
+        """
+
+        async def acomplete(self, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated 429 cascade — non-JudgeError")
+
+    # ``RubricJudge`` will pull from this client and raise.
+    agent = _AlwaysPassAgent("any")
+    result = asyncio.run(
+        measure_long_context_degradation(
+            tasks=[flaky_task],
+            agent=agent,
+            rubric_client=_RaisingRubricClient(),  # type: ignore[arg-type]
+            reps=2,
+            lengths=[4_000],
+            n_resamples=50,
+        )
+    )
+    # Metric must NOT have crashed. Every rep failed the judge → empty
+    # passes list at the tier → no measured tiers → full N/A surface.
+    assert result.kind == "long_context"
+    assert result.success_rates == []
+    assert result.measured_length_indices == []
+    assert result.fit_converged is False
+    # Per-task notes record the judge failures.
+    pt = result.per_task[0]
+    assert pt.notes is not None
+    assert "judge fail" in pt.notes
+
+
 def test_measure_long_context_rejects_zero_reps() -> None:
     task = _exact_task("t_zr", ground_truth="X")
     with pytest.raises(ValueError, match="reps must be"):
