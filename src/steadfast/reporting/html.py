@@ -45,6 +45,7 @@ from steadfast.metrics.calibration import (
 from steadfast.metrics.consistency import OutputConsistencyResult
 from steadfast.metrics.robustness import (
     ContradictionResult,
+    LongContextResult,
     RobustnessDimension,
     RobustnessSubMetricResult,
 )
@@ -321,6 +322,8 @@ def _render_robustness_section(
             sub = dim.sub_metrics.get(kind)
             if isinstance(sub, ContradictionResult):
                 cells.append(f"<td>{_render_contradiction_cell(sub)}</td>")
+            elif isinstance(sub, LongContextResult):
+                cells.append(f"<td>{_render_long_context_cell(sub)}</td>")
             else:
                 cells.append(f"<td>{_render_robustness_cell(sub)}</td>")
         cells.append(f"<td><span class='subtle'>{dim.n_tasks}</span></td>")
@@ -396,6 +399,47 @@ def _render_contradiction_cell(sub: ContradictionResult) -> str:
         )
     parts.append(f"<div class='subtle'>n={sub.n_reps_with_tools}</div>")
     return "".join(parts)
+
+
+def _render_long_context_cell(sub: LongContextResult) -> str:
+    """Render the long-context cell — empirical curve summary + sigmoid fit.
+
+    Minimal v0.1 cell: one line of empirical pass-rates across the tier
+    ladder, plus the fitted slope and L_50 with their CIs when the
+    sigmoid converged. The full SVG-curve rendering lands Friday per
+    ``docs/WEEK_2.md`` §Friday; this stub keeps the HTML report
+    functional in the meantime and exercises the v0.1 reporting surface
+    for the long-context dimension end-to-end.
+    """
+    if not sub.success_rates:
+        reason = sub.reason or "no measurement"
+        return f"<span class='warn'>{_h(reason)}</span>"
+    curve_parts: list[str] = []
+    for tier_idx, rate in zip(sub.measured_length_indices, sub.success_rates, strict=True):
+        length = sub.lengths[tier_idx]
+        ci = sub.success_cis[sub.measured_length_indices.index(tier_idx)]
+        curve_parts.append(
+            f"<div>{length:,}: {rate:.3f} "
+            f"<span class='ci'>[{ci.ci_lower:.3f}, {ci.ci_upper:.3f}]</span></div>"
+        )
+    if sub.fit_converged and sub.slope is not None and sub.l50 is not None:
+        slope_ci = ""
+        if sub.slope_ci_lower is not None and sub.slope_ci_upper is not None:
+            slope_ci = (
+                f" <span class='ci'>[{sub.slope_ci_lower:+.2f}, {sub.slope_ci_upper:+.2f}]</span>"
+            )
+        l50_ci = ""
+        if sub.l50_ci_lower is not None and sub.l50_ci_upper is not None:
+            l50_ci = f" <span class='ci'>[{sub.l50_ci_lower:,.0f}, {sub.l50_ci_upper:,.0f}]</span>"
+        fit_line = (
+            f"<div class='subtle'>slope {sub.slope:+.2f}{slope_ci} "
+            f"&nbsp; L<sub>50</sub> {sub.l50:,.0f}{l50_ci}</div>"
+        )
+    elif sub.reason:
+        fit_line = f"<div class='warn'>{_h(sub.reason)}</div>"
+    else:
+        fit_line = ""
+    return "".join(curve_parts) + fit_line
 
 
 def _render_pass_rate_section(

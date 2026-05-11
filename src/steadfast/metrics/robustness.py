@@ -1,7 +1,7 @@
-"""Robustness dimension — typo / distractor / contradiction sub-metrics.
+"""Robustness dimension — typo / distractor / contradiction / long-context sub-metrics.
 
 Per ``docs/METHODOLOGY.md`` §2 and ADR-0006, robustness sub-metrics fall
-into two reporting shapes:
+into three reporting shapes:
 
 * **Delta-style** (typo, distractor): success-rate delta (perturbed minus
   clean) on the same task set, with a 95% paired-bootstrap CI on the
@@ -10,9 +10,12 @@ into two reporting shapes:
   ``(p_detect, p_retry, p_halluc)`` with per-cell Wilson 95% CIs per
   ADR-0006 §D. The three CIs are not jointly bounded (sum-to-1 only at
   the point estimate); the result's ``notes`` field documents this honestly.
-
-Long-context (week 2 / Thursday) lands in a follow-up commit per
-``docs/WEEK_2.md``.
+* **Curve + fit** (long_context): empirical success rate at each of
+  ``[4k, 16k, 64k, 128k]`` token tiers with Wilson CIs, plus a sigmoid
+  fit on ``log10(tokens)`` summarized by a slope coefficient and the
+  derived ``L_50`` token count at which fitted success drops to 50%.
+  Both summary statistics carry bootstrap CIs via task-level resampling
+  per ADR-0006 §E.
 
 The clean arm reuses the existing per-task ``RunResult`` produced by the
 main bench loop — clean reps were already executed and judged before
@@ -43,10 +46,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import warnings
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from pathlib import Path
 from typing import Final, Literal
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+from scipy.optimize import OptimizeWarning, curve_fit
 
 from steadfast.agent import Agent, AgentResponse, Task, ToolCall
 from steadfast.judges import build_default_judge
@@ -64,12 +71,24 @@ from steadfast.perturbations.distractor import (
     perturb_distractor,
     pick_distractor,
 )
+from steadfast.perturbations.long_context import (
+    DEFAULT_FILLER_PATH as LONG_CONTEXT_DEFAULT_FILLER_PATH,
+)
+from steadfast.perturbations.long_context import (
+    perturb_long_context,
+)
 from steadfast.perturbations.typo import (
     DEFAULT_MAX_WORD_CORRUPTION,
     DEFAULT_RATE,
     perturb_typo,
 )
 from steadfast.runner import RepStatus, RunResult
+from steadfast.stats.bootstrap import (
+    DEFAULT_CONFIDENCE_LEVEL,
+    DEFAULT_METHOD,
+    DEFAULT_N_RESAMPLES,
+    bootstrap_ci,
+)
 from steadfast.stats.paired_bootstrap import paired_bootstrap_ci
 from steadfast.stats.wilson import WilsonCI, wilson_ci
 
@@ -80,8 +99,15 @@ _log = logging.getLogger(__name__)
 # membership). The delta-shaped result classes narrow ``kind`` to
 # ``Literal["typo", "distractor"]`` so the discriminated union with
 # ``ContradictionResult`` (kind="contradiction") works cleanly.
-RobustnessKind = Literal["typo", "distractor", "contradiction"]
-SUPPORTED_KINDS: Final[frozenset[str]] = frozenset({"typo", "distractor", "contradiction"})
+RobustnessKind = Literal["typo", "distractor", "contradiction", "long_context"]
+SUPPORTED_KINDS: Final[frozenset[str]] = frozenset(
+    {"typo", "distractor", "contradiction", "long_context"}
+)
+
+# Methodology-specified long-context tier ladder (METHODOLOGY §2.4 /
+# ADR-0006 §E). The log10-spaced 4x-jump ladder maps to evenly-spaced
+# x-axis points under the sigmoid fit.
+DEFAULT_LONG_CONTEXT_LENGTHS: Final[tuple[int, ...]] = (4_000, 16_000, 64_000, 128_000)
 
 # Three-way categorical labels per ADR-0006 §D. Decision rules in the
 # classifier are evaluated in this priority order: detected wins over
@@ -223,23 +249,107 @@ class ContradictionResult(BaseModel):
     notes: str | None = None
 
 
+class LongContextTaskResult(BaseModel):
+    """Per-task long-context measurement at each length tier.
+
+    ``passes_per_length[i]`` is the per-rep boolean vector at
+    ``lengths[i]``; ``rates_per_length[i]`` is its mean. A length tier
+    that was skipped for this task (because the task input is already
+    longer than the tier) appears as an empty inner list at that index
+    and the corresponding rate is ``None``. ``notes`` records any
+    per-tier skips so the diagnostic surface is preserved.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    kind: Literal["long_context"] = "long_context"
+    lengths: list[int]
+    passes_per_length: list[list[bool]]
+    rates_per_length: list[float | None]
+    perturbed_input_previews_per_length: list[list[str]]
+    seed: int  # base seed = derive_seed(task_id, "long_context") (per-rep extends this)
+    notes: str | None = None
+
+
+class LongContextResult(BaseModel):
+    """Aggregate long-context degradation curve + sigmoid fit per ADR-0006 §E.
+
+    The empirical curve is the methodologically primary artifact;
+    ``success_rates`` and ``success_cis`` pool successes/trials across
+    tasks at each length tier with one Wilson 95% CI per tier. The
+    sigmoid fit summarizes the curve with two derived quantities:
+
+    * ``slope`` — coefficient on ``log10(tokens)`` in
+      ``p(L) = 1 / (1 + exp(-(a + b · log10(L))))``. Negative ``slope``
+      = the agent degrades with length (the expected case); positive
+      ``slope`` = the agent gets better with more context (a real
+      surprise per ADR-0006 §E's "warrants investigation" rule).
+    * ``l50`` — derived ``10^(-a/b)``, the token count at which fitted
+      success probability drops to 0.5.
+
+    Both come with bootstrap CIs: resample tasks (with their per-tier
+    rate arrays as a unit), refit per resample, take the 2.5/97.5
+    percentiles. Implementation reuses
+    :func:`steadfast.stats.bootstrap.bootstrap_ci` with a custom
+    statistic per ADR-0006 §E.
+
+    On fit-convergence failure (e.g., a flat curve where the sigmoid is
+    ill-conditioned, or a curve with no monotone trend), ``slope`` /
+    ``slope_ci_*`` / ``l50`` / ``l50_ci_*`` are all ``None`` and
+    ``fit_converged`` is ``False``; the empirical curve still reports.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["long_context"] = "long_context"
+    n_tasks: int
+    lengths: list[int]
+
+    # Pooled empirical curve — one Wilson CI per length tier. Tiers
+    # where no task produced a measurement are omitted from these two
+    # parallel lists; ``measured_length_indices`` (below) records which
+    # entries of ``lengths`` were actually pooled so consumers can
+    # align the curve back to the input tier ladder.
+    success_rates: list[float]
+    success_cis: list[WilsonCI]
+    measured_length_indices: list[int]  # indices into ``lengths`` parallel to success_rates
+
+    # Sigmoid fit summary (all None when ``fit_converged is False``)
+    slope: float | None
+    slope_ci_lower: float | None
+    slope_ci_upper: float | None
+    l50: float | None
+    l50_ci_lower: float | None
+    l50_ci_upper: float | None
+    fit_converged: bool
+
+    confidence_level: float | None
+    n_resamples: int | None
+
+    per_task: list[LongContextTaskResult]
+    reason: str | None = None  # populated on N/A paths (n_tasks<2, no measured tiers)
+    notes: str | None = None
+
+
 class RobustnessDimension(BaseModel):
     """Combined robustness result for one (model, run) configuration.
 
     Mirrors :class:`steadfast.metrics.calibration.CalibrationDimension`
     in shape — the HTML report consumes a single ``robustness.json`` per
     model with all sub-metrics nested. The dict value is a Pydantic 2
-    "smart" union of the delta-style and contradiction shapes,
-    discriminated by each member's ``kind`` Literal.
+    "smart" union of the delta-style, contradiction, and long-context
+    shapes, discriminated by each member's ``kind`` Literal.
     """
 
     model_config = ConfigDict(frozen=True)
 
     model: str
     n_tasks: int
-    sub_metrics: dict[str, RobustnessSubMetricResult | ContradictionResult] = Field(
-        default_factory=dict
-    )
+    sub_metrics: dict[
+        str,
+        RobustnessSubMetricResult | ContradictionResult | LongContextResult,
+    ] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +997,507 @@ async def measure_contradiction_handling(
 
 
 # ---------------------------------------------------------------------------
+# Long-context (curve + sigmoid fit) — Thursday's surface per ADR-0006 §E
+# ---------------------------------------------------------------------------
+
+
+def _sigmoid_log10(log10_l: np.ndarray, a: float, b: float) -> np.ndarray:
+    """``p(L) = 1 / (1 + exp(-(a + b · log10(L))))`` evaluated on a log10 axis.
+
+    The fit is parameterized in ``log10(L)`` rather than ``L`` so the
+    four METHODOLOGY-specified length tiers (4k, 16k, 64k, 128k) sit
+    evenly on the x-axis (each 4x jump = one unit on log10). Caller
+    passes the *already-log10ed* tier values per ADR-0006 §E.
+    """
+    return 1.0 / (1.0 + np.exp(-(a + b * log10_l)))
+
+
+def _fit_sigmoid(
+    lengths: Sequence[int], rates: Sequence[float]
+) -> tuple[float, float, float] | None:
+    """Fit the long-context sigmoid; return ``(a, b, l50)`` or ``None``.
+
+    ``rates`` are aggregated success rates at each entry of ``lengths``;
+    NaN-valued entries (length tiers with no measurement) are filtered
+    out before fitting. Returns ``None`` if fewer than two finite
+    points remain (fit ill-conditioned), if ``curve_fit`` raises
+    :class:`RuntimeError`, or if ``OptimizeWarning`` was emitted, or
+    if the fitted slope is too close to zero for ``l50 = 10^(-a/b)`` to
+    be numerically meaningful.
+
+    Initial guesses: ``a=0`` (centered around 50%-success at log10=0),
+    ``b=-1`` (mild negative slope on the log10 axis). The slope's sign
+    is intentionally guessed negative so the optimizer doesn't land on
+    a mirror-image positive-slope basin when the curve actually
+    degrades.
+    """
+    finite_pairs = [(lo, r) for lo, r in zip(lengths, rates, strict=True) if np.isfinite(r)]
+    if len(finite_pairs) < 2:
+        return None
+    finite_lengths = np.array([p[0] for p in finite_pairs], dtype=float)
+    finite_rates = np.array([p[1] for p in finite_pairs], dtype=float)
+    log10_l = np.log10(finite_lengths)
+
+    try:
+        with warnings.catch_warnings():
+            # Treat optimizer warnings (covariance estimation issues,
+            # ill-conditioned Jacobians) as failures rather than letting
+            # them silently leak through.
+            warnings.simplefilter("error", OptimizeWarning)
+            popt, _pcov = curve_fit(
+                _sigmoid_log10,
+                log10_l,
+                finite_rates,
+                p0=(0.0, -1.0),
+                maxfev=5000,
+            )
+    except (RuntimeError, OptimizeWarning, ValueError):
+        return None
+
+    a = float(popt[0])
+    b = float(popt[1])
+    # l50 is the token count where the fitted probability crosses 0.5.
+    # ``log10(l50) = -a/b`` is well-defined only when ``b`` is non-zero;
+    # near-zero slope means the curve is essentially flat and l50 would
+    # blow up. Treat as non-convergence.
+    if abs(b) < 1e-9:
+        return None
+    log10_l50 = -a / b
+    # Guard against pathological fits that place l50 absurdly far from
+    # the measured tier range (e.g., 10^100). The tier ladder spans
+    # ~4 orders of magnitude; clamp the well-defined range to
+    # log10 ∈ [0, 9] (1 token to ~1B tokens).
+    if not (0.0 <= log10_l50 <= 9.0):
+        return None
+    return a, b, 10**log10_l50
+
+
+def _bootstrap_curve_cis(
+    *,
+    per_task_rates: np.ndarray,
+    lengths: Sequence[int],
+    seed: int,
+    n_resamples: int,
+    confidence_level: float,
+) -> tuple[float, float, float, float] | None:
+    """Bootstrap CI on ``(slope, l50)`` per ADR-0006 §E.
+
+    ``per_task_rates`` has shape ``(n_tasks, n_lengths)`` with NaN at
+    tiers that weren't measured for a given task. Resamples task rows
+    with replacement, computes ``nanmean`` per tier on the resampled
+    set, refits the sigmoid, collects ``(slope, l50)``. Reuses
+    :func:`steadfast.stats.bootstrap.bootstrap_ci` with a custom
+    statistic that closes over the rate matrix — per ADR-0006 §E's
+    "Reuses ``stats.bootstrap.bootstrap_ci`` with a custom statistic"
+    contract.
+
+    Returns ``(slope_lo, slope_hi, l50_lo, l50_hi)`` or ``None`` if the
+    bootstrap couldn't produce a finite CI (e.g., the resampled fits
+    failed too often to estimate a percentile reliably).
+    """
+    n_tasks = per_task_rates.shape[0]
+    if n_tasks < 2:
+        return None
+
+    # Pre-suppress NaN warnings — many resamples produce all-NaN columns
+    # by chance on small N, which is the expected degenerate path; we
+    # surface them as failed fits, not as runtime warnings.
+    def _resampled_rates(idx_arr: np.ndarray) -> np.ndarray:
+        idx = idx_arr.astype(int)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.asarray(np.nanmean(per_task_rates[idx], axis=0), dtype=float)
+
+    def fit_slope(idx_arr: np.ndarray) -> float:
+        rates = _resampled_rates(idx_arr)
+        fit = _fit_sigmoid(lengths, rates.tolist())
+        return float("nan") if fit is None else fit[1]
+
+    def fit_l50(idx_arr: np.ndarray) -> float:
+        rates = _resampled_rates(idx_arr)
+        fit = _fit_sigmoid(lengths, rates.tolist())
+        return float("nan") if fit is None else fit[2]
+
+    # The bootstrap reuses the canonical bootstrap_ci wrapper per ADR-0006 §E.
+    # We pass task indices [0..n-1] as the data; the statistic closes over
+    # `per_task_rates` to recover the per-resample rate vector.
+    indices = list(range(n_tasks))
+    try:
+        with warnings.catch_warnings():
+            # scipy.stats.bootstrap's BCa path divides by an acceleration-
+            # term denominator that goes to zero when every resample yields
+            # the same slope (degenerate case — all tasks share an identical
+            # curve). The bootstrap_ci wrapper already NaN-clamps the
+            # resulting interval to the point estimate, so the runtime
+            # warning is pure noise.
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            slope_ci = bootstrap_ci(
+                indices,
+                fit_slope,
+                n_resamples=n_resamples,
+                confidence_level=confidence_level,
+                method=DEFAULT_METHOD,
+                seed=seed,
+            )
+            l50_ci = bootstrap_ci(
+                indices,
+                fit_l50,
+                n_resamples=n_resamples,
+                confidence_level=confidence_level,
+                method=DEFAULT_METHOD,
+                seed=seed,
+            )
+    except (ValueError, RuntimeError):
+        return None
+
+    if not (
+        np.isfinite(slope_ci.ci_lower)
+        and np.isfinite(slope_ci.ci_upper)
+        and np.isfinite(l50_ci.ci_lower)
+        and np.isfinite(l50_ci.ci_upper)
+    ):
+        return None
+    return slope_ci.ci_lower, slope_ci.ci_upper, l50_ci.ci_lower, l50_ci.ci_upper
+
+
+def _aggregate_long_context_result(
+    *,
+    per_task: list[LongContextTaskResult],
+    lengths: Sequence[int],
+    aggregate_seed: int,
+    n_resamples: int,
+    confidence_level: float,
+) -> LongContextResult:
+    """Aggregate per-task curves into the dimension result.
+
+    Steps per ADR-0006 §E:
+
+    1. Pool successes/trials across tasks at each tier → empirical
+       curve + Wilson CIs (skip tiers where total trials = 0).
+    2. Fit the sigmoid on the pooled rates at the measured tiers.
+    3. Bootstrap CI on slope + l50 by resampling tasks (with their
+       per-tier rate arrays as a unit). Each resample refits.
+    4. On fit failure, the empirical curve still reports;
+       ``fit_converged = False`` and the slope/L50 fields are None.
+    """
+    lengths_list = list(lengths)
+    n_tasks = len(per_task)
+    n_tiers = len(lengths_list)
+
+    # Step 1: pool empirical curve.
+    successes_per_tier = [0] * n_tiers
+    trials_per_tier = [0] * n_tiers
+    for ptr in per_task:
+        # Each per-task result must agree with the dimension's ``lengths``
+        # list — assemble defensively in case a future caller passes
+        # heterogeneous tier ladders.
+        for tier_idx, tier_passes in enumerate(ptr.passes_per_length):
+            if tier_idx >= n_tiers:
+                break
+            successes_per_tier[tier_idx] += sum(tier_passes)
+            trials_per_tier[tier_idx] += len(tier_passes)
+
+    measured_indices: list[int] = []
+    success_rates: list[float] = []
+    success_cis: list[WilsonCI] = []
+    for tier_idx in range(n_tiers):
+        if trials_per_tier[tier_idx] == 0:
+            continue
+        measured_indices.append(tier_idx)
+        success_rates.append(successes_per_tier[tier_idx] / trials_per_tier[tier_idx])
+        success_cis.append(wilson_ci(successes_per_tier[tier_idx], trials_per_tier[tier_idx]))
+
+    if not measured_indices:
+        # No data at any tier — every task was too long for every tier.
+        return LongContextResult(
+            kind="long_context",
+            n_tasks=n_tasks,
+            lengths=lengths_list,
+            success_rates=[],
+            success_cis=[],
+            measured_length_indices=[],
+            slope=None,
+            slope_ci_lower=None,
+            slope_ci_upper=None,
+            l50=None,
+            l50_ci_lower=None,
+            l50_ci_upper=None,
+            fit_converged=False,
+            confidence_level=None,
+            n_resamples=None,
+            per_task=per_task,
+            reason="no length tier produced any judged rep (all tasks exceeded every tier)",
+        )
+
+    measured_lengths = [lengths_list[i] for i in measured_indices]
+
+    # Step 2: point fit on pooled rates.
+    point_fit = _fit_sigmoid(measured_lengths, success_rates)
+
+    # Step 3: bootstrap CI on slope + l50 if we have enough tasks to
+    # resample. We need at least 2 tasks AND at least 2 measured tiers
+    # for the sigmoid to be identifiable.
+    notes_parts: list[str] = []
+    reason: str | None = None
+
+    if point_fit is None:
+        fit_converged = False
+        slope = None
+        l50 = None
+        slope_ci_lower = slope_ci_upper = None
+        l50_ci_lower = l50_ci_upper = None
+        reason = (
+            "sigmoid fit did not converge — typically a flat curve "
+            "(graceful degradation across all tiers) or a curve with no "
+            "monotone trend. Empirical curve still reports per ADR-0006 §E."
+        )
+    elif n_tasks < 2 or len(measured_indices) < 2:
+        # Point fit succeeded but bootstrap is undefined — report the
+        # point estimate and N/A the CI, parallel to the n_tasks<2 path
+        # in `_aggregate_sub_metric`.
+        _, slope, l50 = point_fit
+        fit_converged = True
+        slope_ci_lower = slope_ci_upper = None
+        l50_ci_lower = l50_ci_upper = None
+        reason = (
+            "bootstrap CI on slope/L_50 requires n_tasks >= 2 AND >= 2 "
+            "measured tiers; reported point fit only"
+        )
+    else:
+        _, slope, l50 = point_fit
+        fit_converged = True
+
+        # Build the per-task rate matrix (n_tasks, n_measured_tiers).
+        # NaN at any (task, tier) the task didn't measure — bootstrap
+        # closure handles via ``nanmean``.
+        rate_matrix = np.full((n_tasks, len(measured_indices)), np.nan, dtype=float)
+        for task_idx, ptr in enumerate(per_task):
+            for out_idx, tier_idx in enumerate(measured_indices):
+                if tier_idx >= len(ptr.rates_per_length):
+                    continue
+                rate = ptr.rates_per_length[tier_idx]
+                if rate is not None:
+                    rate_matrix[task_idx, out_idx] = rate
+
+        cis = _bootstrap_curve_cis(
+            per_task_rates=rate_matrix,
+            lengths=measured_lengths,
+            seed=aggregate_seed,
+            n_resamples=n_resamples,
+            confidence_level=confidence_level,
+        )
+        if cis is None:
+            slope_ci_lower = slope_ci_upper = None
+            l50_ci_lower = l50_ci_upper = None
+            notes_parts.append(
+                "bootstrap CI on slope/L_50 unavailable (too many resamples failed to fit)"
+            )
+        else:
+            slope_ci_lower, slope_ci_upper, l50_ci_lower, l50_ci_upper = cis
+
+    aggregate_notes = "; ".join(notes_parts) if notes_parts else None
+
+    return LongContextResult(
+        kind="long_context",
+        n_tasks=n_tasks,
+        lengths=lengths_list,
+        success_rates=success_rates,
+        success_cis=success_cis,
+        measured_length_indices=measured_indices,
+        slope=slope,
+        slope_ci_lower=slope_ci_lower,
+        slope_ci_upper=slope_ci_upper,
+        l50=l50,
+        l50_ci_lower=l50_ci_lower,
+        l50_ci_upper=l50_ci_upper,
+        fit_converged=fit_converged,
+        confidence_level=confidence_level if fit_converged else None,
+        n_resamples=n_resamples if fit_converged else None,
+        per_task=per_task,
+        reason=reason,
+        notes=aggregate_notes,
+    )
+
+
+async def measure_long_context_degradation(
+    *,
+    tasks: Sequence[Task],
+    agent: Agent,
+    rubric_client: BaseModelClient | None,
+    reps: int = 10,
+    lengths: Sequence[int] = DEFAULT_LONG_CONTEXT_LENGTHS,
+    filler_path: str | Path = LONG_CONTEXT_DEFAULT_FILLER_PATH,
+    aggregate_seed: int = 0,
+    n_resamples: int = DEFAULT_N_RESAMPLES,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+) -> LongContextResult:
+    """Per METHODOLOGY §2.4 / ADR-0006 §E: curve + sigmoid + bootstrap CIs.
+
+    For each (task, tier) cell, the metric builds ``reps`` perturbed
+    inputs (per-rep seeds extending the long-context base seed via
+    ADR-0006 §B's ``rep{idx}`` extension; the tier itself contributes to
+    the seed via the ``tool_call_idx`` slot so reps at different tiers
+    pull different filler windows). Each perturbed input is run through
+    ``agent.arun`` via :func:`asyncio.gather` and judged by the per-task
+    :class:`steadfast.judges.base.Judge`. The aggregate empirical curve
+    pools successes/trials across tasks at each tier with Wilson 95%
+    CIs; the sigmoid fit summarizes the curve with slope and L_50, both
+    with bootstrap CIs.
+
+    Unlike :func:`measure_typo_robustness`, this function does not take
+    a ``clean_run_results`` argument — the long-context metric reports
+    an absolute curve over tier ladder, not a clean-vs-perturbed delta.
+
+    Parameters
+    ----------
+    tasks:
+        Benchmark tasks. Each is measured at every tier in ``lengths``;
+        a task that's already too long for a given tier (after the
+        delimiter) is skipped for that tier with a per-task ``notes``
+        entry.
+    agent:
+        The :class:`Agent` under measurement.
+    rubric_client:
+        Optional rubric judge client; ``None`` is fine for
+        ``judge="exact_match"`` tasks.
+    reps:
+        Per (task, tier) repetition count. METHODOLOGY default is N=10.
+    lengths:
+        The tier ladder. Default is :data:`DEFAULT_LONG_CONTEXT_LENGTHS`
+        (4k / 16k / 64k / 128k per METHODOLOGY §2.4).
+    filler_path:
+        Path to the frozen filler corpus. Defaults to
+        ``prompts/longcontext_filler_v1.txt``.
+    aggregate_seed:
+        Seed for the bootstrap CI on slope and L_50.
+    n_resamples, confidence_level:
+        Standard bootstrap parameters; defaults from
+        :mod:`steadfast.stats.bootstrap`.
+    """
+    if reps < 1:
+        raise ValueError(f"reps must be >= 1; got {reps}")
+    if not lengths:
+        raise ValueError("lengths must be non-empty")
+    lengths_list = list(lengths)
+    if any(length <= 0 for length in lengths_list):
+        raise ValueError(f"all lengths must be > 0; got {lengths_list}")
+
+    per_task_results: list[LongContextTaskResult] = []
+
+    for task in tasks:
+        passes_per_length: list[list[bool]] = []
+        previews_per_length: list[list[str]] = []
+        rates_per_length: list[float | None] = []
+        task_notes: list[str] = []
+
+        judge = build_default_judge(task, rubric_client=rubric_client)
+
+        for tier_idx, target_tokens in enumerate(lengths_list):
+            # Per-tier rep seeding: use the ADR-0006 §B per-rep extension
+            # and ride the tier index on the ``tool_call_idx`` slot. The
+            # _seed.py docstring explicitly anticipates both extensions
+            # stacking; semantically the tier identifies a corruption-
+            # like axis (which filler window to pull) parallel to the
+            # contradiction perturbation's per-tool-call coin.
+            perturbed_inputs: list[str] = []
+            tier_skipped_reason: str | None = None
+            for rep_idx in range(reps):
+                rep_seed = derive_seed(
+                    task.id,
+                    "long_context",
+                    rep_idx=rep_idx,
+                    tool_call_idx=tier_idx,
+                )
+                try:
+                    p_input = perturb_long_context(
+                        task.input,
+                        target_tokens=target_tokens,
+                        filler_path=filler_path,
+                        seed=rep_seed,
+                    )
+                except ValueError as exc:
+                    # Task too long for this tier — skip the whole tier.
+                    tier_skipped_reason = (
+                        f"tier {target_tokens} skipped: task input exceeds tier ({exc})"
+                    )
+                    break
+                perturbed_inputs.append(p_input)
+
+            if tier_skipped_reason is not None:
+                task_notes.append(tier_skipped_reason)
+                passes_per_length.append([])
+                previews_per_length.append([])
+                rates_per_length.append(None)
+                continue
+
+            perturbed_tasks = [task.model_copy(update={"input": pi}) for pi in perturbed_inputs]
+            raw_results: list[AgentResponse | BaseException] = await asyncio.gather(
+                *(agent.arun(t) for t in perturbed_tasks),
+                return_exceptions=True,
+            )
+
+            tier_passes: list[bool] = []
+            tier_previews: list[str] = []
+            n_arun_failures = 0
+            n_judge_failures = 0
+            for rep_idx, raw in enumerate(raw_results):
+                if isinstance(raw, BaseException):
+                    n_arun_failures += 1
+                    _log.warning(
+                        "agent.arun failed on long_context rep for task=%s tier=%d rep=%d: %s",
+                        task.id,
+                        target_tokens,
+                        rep_idx,
+                        raw,
+                    )
+                    continue
+                try:
+                    verdict = await judge.ajudge(task, raw)
+                except JudgeError as exc:
+                    n_judge_failures += 1
+                    _log.warning(
+                        "judge failed on long_context rep for task=%s tier=%d rep=%d: %s",
+                        task.id,
+                        target_tokens,
+                        rep_idx,
+                        exc,
+                    )
+                    continue
+                tier_passes.append(bool(verdict.passed))
+                tier_previews.append(perturbed_inputs[rep_idx][:_PERTURBED_PREVIEW_CHARS])
+
+            passes_per_length.append(tier_passes)
+            previews_per_length.append(tier_previews)
+            rates_per_length.append(sum(tier_passes) / len(tier_passes) if tier_passes else None)
+
+            if n_arun_failures or n_judge_failures:
+                task_notes.append(
+                    f"tier {target_tokens}: {n_arun_failures} arun fail(s), "
+                    f"{n_judge_failures} judge fail(s)"
+                )
+
+        per_task_results.append(
+            LongContextTaskResult(
+                task_id=task.id,
+                lengths=lengths_list,
+                passes_per_length=passes_per_length,
+                rates_per_length=rates_per_length,
+                perturbed_input_previews_per_length=previews_per_length,
+                seed=derive_seed(task.id, "long_context"),
+                notes="; ".join(task_notes) if task_notes else None,
+            )
+        )
+
+    return _aggregate_long_context_result(
+        per_task=per_task_results,
+        lengths=lengths_list,
+        aggregate_seed=aggregate_seed,
+        n_resamples=n_resamples,
+        confidence_level=confidence_level,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Wrapper that bundles all sub-metrics into a single dimension result
 # ---------------------------------------------------------------------------
 
@@ -900,17 +1511,19 @@ async def measure_robustness(
     rubric_client: BaseModelClient | None,
     kinds: Iterable[str],
     distractor_banks: dict[str, DistractorBank] | None = None,
+    long_context_filler_path: str | Path = LONG_CONTEXT_DEFAULT_FILLER_PATH,
+    long_context_lengths: Sequence[int] = DEFAULT_LONG_CONTEXT_LENGTHS,
     reps: int = 10,
     aggregate_seed: int = 0,
 ) -> RobustnessDimension:
     """Run the requested robustness sub-metrics and bundle into a dimension.
 
     ``kinds`` is the subset of :data:`SUPPORTED_KINDS` to measure
-    (typo + distractor + contradiction; long_context lands Thursday).
-    Unknown kinds raise :class:`ValueError`. Contradiction does not
-    consume ``clean_run_results`` (no clean/perturbed delta — it's a
-    3-way categorical metric per ADR-0006 §D); the dispatch threads only
-    the inputs each kind needs.
+    (typo / distractor / contradiction / long_context). Unknown kinds
+    raise :class:`ValueError`. Contradiction and long_context do not
+    consume ``clean_run_results`` (contradiction is a 3-way categorical
+    per ADR-0006 §D; long_context is an absolute curve per ADR-0006 §E);
+    the dispatch threads only the inputs each kind needs.
     """
     requested = frozenset(kinds)
     unknown = requested - SUPPORTED_KINDS
@@ -919,7 +1532,10 @@ async def measure_robustness(
             f"unknown robustness kind(s): {sorted(unknown)} — supported: {sorted(SUPPORTED_KINDS)}"
         )
 
-    sub_metrics: dict[str, RobustnessSubMetricResult | ContradictionResult] = {}
+    sub_metrics: dict[
+        str,
+        RobustnessSubMetricResult | ContradictionResult | LongContextResult,
+    ] = {}
 
     delta_runners: list[tuple[str, Awaitable[RobustnessSubMetricResult]]] = []
     if "typo" in requested:
@@ -966,6 +1582,17 @@ async def measure_robustness(
             reps=reps,
         )
 
+    if "long_context" in requested:
+        sub_metrics["long_context"] = await measure_long_context_degradation(
+            tasks=tasks,
+            agent=agent,
+            rubric_client=rubric_client,
+            reps=reps,
+            lengths=long_context_lengths,
+            filler_path=long_context_filler_path,
+            aggregate_seed=aggregate_seed,
+        )
+
     return RobustnessDimension(
         model=model,
         n_tasks=len(tasks),
@@ -974,10 +1601,13 @@ async def measure_robustness(
 
 
 __all__ = [
+    "DEFAULT_LONG_CONTEXT_LENGTHS",
     "SUPPORTED_KINDS",
     "ContradictionLabel",
     "ContradictionResult",
     "ContradictionTaskResult",
+    "LongContextResult",
+    "LongContextTaskResult",
     "RobustnessDimension",
     "RobustnessKind",
     "RobustnessSubMetricResult",
@@ -985,6 +1615,7 @@ __all__ = [
     "classify_contradiction_response",
     "measure_contradiction_handling",
     "measure_distractor_robustness",
+    "measure_long_context_degradation",
     "measure_robustness",
     "measure_typo_robustness",
 ]

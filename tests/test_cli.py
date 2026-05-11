@@ -57,11 +57,12 @@ def test_parse_metrics_unknown_raises() -> None:
 def test_parse_robustness_types_default_is_all_supported() -> None:
     """When --robustness-types is omitted, default to all supported kinds.
 
-    Wednesday added contradiction to the supported set; long_context lands
-    Thursday.
+    Thursday closes the v0.1 set with long_context (typo + distractor +
+    contradiction + long_context per METHODOLOGY §2).
     """
-    assert parse_robustness_types(None) == frozenset({"typo", "distractor", "contradiction"})
-    assert parse_robustness_types("") == frozenset({"typo", "distractor", "contradiction"})
+    expected = frozenset({"typo", "distractor", "contradiction", "long_context"})
+    assert parse_robustness_types(None) == expected
+    assert parse_robustness_types("") == expected
 
 
 def test_parse_robustness_types_subset() -> None:
@@ -70,12 +71,14 @@ def test_parse_robustness_types_subset() -> None:
     assert parse_robustness_types(" typo ,  distractor ") == {"typo", "distractor"}
     assert parse_robustness_types("contradiction") == {"contradiction"}
     assert parse_robustness_types("typo,contradiction") == {"typo", "contradiction"}
+    assert parse_robustness_types("long_context") == {"long_context"}
+    assert parse_robustness_types("typo,long_context") == {"typo", "long_context"}
 
 
 def test_parse_robustness_types_unknown_raises() -> None:
-    """Long-context lands Thursday and is not yet a valid robustness kind."""
+    """Truly unknown types still raise; long_context joined the supported set Thursday."""
     with pytest.raises(typer.BadParameter, match="unknown robustness type"):
-        parse_robustness_types("typo,long_context")
+        parse_robustness_types("typo,nonexistent_kind")
 
 
 # ---------------------------------------------------------------------------

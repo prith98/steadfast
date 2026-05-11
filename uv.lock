@@ -1931,6 +1931,12 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+langgraph = [
+    { name = "langchain-core" },
+    { name = "langgraph" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -1946,6 +1952,8 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "google-genai", specifier = ">=0.5" },
     { name = "jsonschema", specifier = ">=4.20" },
+    { name = "langchain-core", marker = "extra == 'langgraph'", specifier = ">=0.3" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.2" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.50" },
     { name = "opentelemetry-api", specifier = ">=1.27" },
@@ -1957,6 +1965,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.7" },
     { name = "typer", specifier = ">=0.12" },
 ]
+provides-extras = ["langgraph"]
 
 [package.metadata.requires-dev]
 dev = [

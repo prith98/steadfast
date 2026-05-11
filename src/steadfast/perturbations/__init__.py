@@ -9,5 +9,18 @@ scope; see :mod:`steadfast.perturbations._seed`.
 """
 
 from steadfast.perturbations._seed import SEED_VERSION, derive_seed
+from steadfast.perturbations.long_context import (
+    DEFAULT_FILLER_PATH as LONG_CONTEXT_DEFAULT_FILLER_PATH,
+)
+from steadfast.perturbations.long_context import (
+    count_tokens,
+    perturb_long_context,
+)
 
-__all__ = ["SEED_VERSION", "derive_seed"]
+__all__ = [
+    "LONG_CONTEXT_DEFAULT_FILLER_PATH",
+    "SEED_VERSION",
+    "count_tokens",
+    "derive_seed",
+    "perturb_long_context",
+]

@@ -19,13 +19,19 @@ import pytest
 from steadfast.agent import Agent, AgentResponse, GroundTruth, Task, ToolCall
 from steadfast.judges.base import Verdict
 from steadfast.metrics.robustness import (
+    DEFAULT_LONG_CONTEXT_LENGTHS,
     SUPPORTED_KINDS,
     ContradictionResult,
+    LongContextResult,
+    LongContextTaskResult,
     RobustnessSubMetricResult,
+    _aggregate_long_context_result,
     _aggregate_sub_metric,
+    _fit_sigmoid,
     classify_contradiction_response,
     measure_contradiction_handling,
     measure_distractor_robustness,
+    measure_long_context_degradation,
     measure_robustness,
     measure_typo_robustness,
 )
@@ -498,9 +504,9 @@ def test_measure_robustness_unknown_kind_raises() -> None:
         )
 
 
-def test_supported_kinds_includes_typo_distractor_contradiction() -> None:
-    """Wednesday extends Tuesday's surface with contradiction; long_context lands Thursday."""
-    assert frozenset({"typo", "distractor", "contradiction"}) == SUPPORTED_KINDS
+def test_supported_kinds_includes_all_four_v01_kinds() -> None:
+    """Thursday closes the v0.1 surface with long_context (the four METHODOLOGY §2 sub-metrics)."""
+    assert frozenset({"typo", "distractor", "contradiction", "long_context"}) == SUPPORTED_KINDS
 
 
 def test_mismatched_tasks_and_clean_results_raises() -> None:
@@ -1038,3 +1044,310 @@ def test_metric_handles_malformed_corruption_metadata() -> None:
     assert result.value == "measured"
     assert result.p_halluc == pytest.approx(1.0)
     assert result.n_reps_with_tools == 2
+
+
+# ---------------------------------------------------------------------------
+# Long-context — sigmoid fit + aggregate per ADR-0006 §E
+# ---------------------------------------------------------------------------
+
+
+def _step_curve_task_result(task_id: str, *, lengths: list[int]) -> LongContextTaskResult:
+    """Build a per-task curve with a clean step between 16k (pass) and 64k (fail).
+
+    Per the brief's hand-computed sigmoid test: 4k all-pass, 16k all-pass,
+    64k all-fail, 128k all-fail. The sigmoid fit places L_50 at the
+    log10-midpoint between the two adjacent tiers (16k=10^4.2 and
+    64k=10^4.8 → log10-mid = 4.5 → ~31_623).
+    """
+    return LongContextTaskResult(
+        task_id=task_id,
+        lengths=lengths,
+        passes_per_length=[
+            [True] * 4,
+            [True] * 4,
+            [False] * 4,
+            [False] * 4,
+        ],
+        rates_per_length=[1.0, 1.0, 0.0, 0.0],
+        perturbed_input_previews_per_length=[[""] * 4 for _ in range(4)],
+        seed=hash(task_id) & 0xFFFFFFFF,
+    )
+
+
+def test_long_context_sigmoid_fit_clean_step_curve() -> None:
+    """Hand-computed: step at 16k→64k → large-negative slope, l50 in [20k, 50k]."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    rates = [1.0, 1.0, 0.0, 0.0]
+    fit = _fit_sigmoid(lengths, rates)
+    assert fit is not None
+    _a, b, l50 = fit
+    assert b < -2, f"expected large negative slope; got {b}"
+    # Log10-midpoint of [16k, 64k] = 10^4.5 ≈ 31_623.
+    assert 20_000 < l50 < 50_000, f"l50={l50} not in expected step-midpoint range"
+
+
+def test_long_context_sigmoid_fit_returns_none_on_flat_curve() -> None:
+    """Flat curve at 1.0 → sigmoid ill-conditioned → None (fit_converged=False path)."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    rates = [1.0, 1.0, 1.0, 1.0]
+    fit = _fit_sigmoid(lengths, rates)
+    assert fit is None
+
+
+def test_long_context_sigmoid_fit_returns_none_on_too_few_points() -> None:
+    """Single finite point → can't fit a 2-parameter model."""
+    fit = _fit_sigmoid([4_000, 16_000], [1.0, float("nan")])
+    assert fit is None
+
+
+def test_long_context_aggregate_brackets_l50_at_log10_midpoint() -> None:
+    """5-task step-curve aggregate: l50 in [20k, 50k] with bootstrap CI."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    per_task = [_step_curve_task_result(f"t{i}", lengths=lengths) for i in range(5)]
+
+    result = _aggregate_long_context_result(
+        per_task=per_task,
+        lengths=lengths,
+        aggregate_seed=0,
+        n_resamples=500,  # small for speed; tighter CI behavior tested via primitive
+        confidence_level=0.95,
+    )
+
+    assert result.fit_converged is True
+    assert result.slope is not None
+    assert result.slope < -2
+    assert result.l50 is not None
+    assert 20_000 < result.l50 < 50_000
+    assert result.success_rates == [1.0, 1.0, 0.0, 0.0]
+    assert result.measured_length_indices == [0, 1, 2, 3]
+    assert len(result.success_cis) == 4
+    # CIs degenerate to (point, point) because every task has the identical
+    # curve — verifies the bootstrap NaN-clamp path.
+    assert result.slope_ci_lower is not None
+    assert result.slope_ci_upper is not None
+    assert result.l50_ci_lower is not None
+    assert result.l50_ci_upper is not None
+
+
+def test_long_context_aggregate_flat_curve_falls_back_to_empirical_only() -> None:
+    """Flat curve → fit_converged=False; empirical curve still populates."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    per_task: list[LongContextTaskResult] = []
+    for i in range(3):
+        per_task.append(
+            LongContextTaskResult(
+                task_id=f"t{i}",
+                lengths=lengths,
+                passes_per_length=[[True] * 4 for _ in range(4)],
+                rates_per_length=[1.0, 1.0, 1.0, 1.0],
+                perturbed_input_previews_per_length=[[""] * 4 for _ in range(4)],
+                seed=i,
+            )
+        )
+
+    result = _aggregate_long_context_result(
+        per_task=per_task,
+        lengths=lengths,
+        aggregate_seed=0,
+        n_resamples=200,
+        confidence_level=0.95,
+    )
+    assert result.fit_converged is False
+    assert result.slope is None
+    assert result.l50 is None
+    assert result.slope_ci_lower is None
+    assert result.l50_ci_upper is None
+    # Empirical curve still reports — methodologically primary artifact.
+    assert result.success_rates == [1.0, 1.0, 1.0, 1.0]
+    assert result.measured_length_indices == [0, 1, 2, 3]
+    assert result.reason is not None
+    assert "did not converge" in result.reason
+
+
+def test_long_context_aggregate_single_task_skips_bootstrap_ci() -> None:
+    """n_tasks=1 → point fit only, CI is N/A with explanatory reason."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    result = _aggregate_long_context_result(
+        per_task=[_step_curve_task_result("only", lengths=lengths)],
+        lengths=lengths,
+        aggregate_seed=0,
+        n_resamples=200,
+        confidence_level=0.95,
+    )
+    assert result.fit_converged is True
+    assert result.slope is not None
+    assert result.l50 is not None
+    assert result.slope_ci_lower is None
+    assert result.l50_ci_upper is None
+    assert result.reason is not None
+    assert "n_tasks >= 2" in result.reason
+
+
+def test_long_context_aggregate_zero_measured_tiers_returns_full_na() -> None:
+    """Every task skipped every tier → fully-N/A result, no fit attempted."""
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    per_task = [
+        LongContextTaskResult(
+            task_id=f"t{i}",
+            lengths=lengths,
+            passes_per_length=[[], [], [], []],
+            rates_per_length=[None, None, None, None],
+            perturbed_input_previews_per_length=[[], [], [], []],
+            seed=i,
+        )
+        for i in range(3)
+    ]
+    result = _aggregate_long_context_result(
+        per_task=per_task,
+        lengths=lengths,
+        aggregate_seed=0,
+        n_resamples=200,
+        confidence_level=0.95,
+    )
+    assert result.success_rates == []
+    assert result.measured_length_indices == []
+    assert result.fit_converged is False
+    assert result.slope is None
+    assert result.reason is not None
+    assert "no length tier" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# Long-context — end-to-end async path with stub agents
+# ---------------------------------------------------------------------------
+
+
+class _LengthGatedAgent(Agent):
+    """Agent that passes for inputs shorter than a token threshold, fails for longer.
+
+    Combined with ExactMatchJudge, this produces a clean step curve at
+    the threshold token count — useful for end-to-end exercise of
+    ``measure_long_context_degradation`` without spinning up an LLM.
+    """
+
+    def __init__(self, *, fail_above_tokens: int, ground_truth: str) -> None:
+        self._threshold = fail_above_tokens
+        self._gt = ground_truth
+        self.calls: list[int] = []  # token-length of each input
+
+    async def arun(self, task: Task) -> AgentResponse:
+        from steadfast.perturbations.long_context import count_tokens
+
+        n = count_tokens(task.input)
+        self.calls.append(n)
+        if n > self._threshold:
+            return AgentResponse(answer="WRONG", raw_output="WRONG", cost_usd=Decimal("0"))
+        return AgentResponse(answer=self._gt, raw_output=self._gt, cost_usd=Decimal("0"))
+
+
+def test_measure_long_context_end_to_end_step_curve() -> None:
+    """End-to-end: agent passes below 30k, fails above → curve degrades over the ladder."""
+    tasks = [
+        _exact_task(f"t_lc_{i}", ground_truth="GROUND_TRUTH", input_text=f"Q{i} please answer")
+        for i in range(2)
+    ]
+    agent = _LengthGatedAgent(fail_above_tokens=30_000, ground_truth="GROUND_TRUTH")
+
+    result = asyncio.run(
+        measure_long_context_degradation(
+            tasks=tasks,
+            agent=agent,
+            rubric_client=None,
+            reps=3,
+            lengths=[4_000, 16_000, 64_000, 128_000],
+            aggregate_seed=0,
+            n_resamples=200,
+        )
+    )
+
+    assert result.kind == "long_context"
+    assert result.n_tasks == 2
+    # Tiers below the agent's threshold pass; tiers above fail.
+    assert result.success_rates[0] == pytest.approx(1.0)  # 4k
+    assert result.success_rates[1] == pytest.approx(1.0)  # 16k
+    assert result.success_rates[2] == pytest.approx(0.0)  # 64k
+    assert result.success_rates[3] == pytest.approx(0.0)  # 128k
+    assert result.measured_length_indices == [0, 1, 2, 3]
+    # Sigmoid fit on a clean step curve should converge.
+    assert result.fit_converged is True
+    assert result.slope is not None
+    assert result.slope < 0
+
+
+def test_measure_long_context_rejects_zero_reps() -> None:
+    task = _exact_task("t_zr", ground_truth="X")
+    with pytest.raises(ValueError, match="reps must be"):
+        asyncio.run(
+            measure_long_context_degradation(
+                tasks=[task],
+                agent=_AlwaysPassAgent("X"),
+                rubric_client=None,
+                reps=0,
+                n_resamples=50,
+            )
+        )
+
+
+def test_measure_long_context_rejects_empty_lengths() -> None:
+    task = _exact_task("t_el", ground_truth="X")
+    with pytest.raises(ValueError, match="lengths must be"):
+        asyncio.run(
+            measure_long_context_degradation(
+                tasks=[task],
+                agent=_AlwaysPassAgent("X"),
+                rubric_client=None,
+                reps=2,
+                lengths=[],
+                n_resamples=50,
+            )
+        )
+
+
+def test_measure_robustness_bundles_long_context() -> None:
+    """measure_robustness dispatch wires the long_context kind through."""
+    task = _exact_task("t_bundle_lc", ground_truth="GROUND_TRUTH", input_text="Q please")
+    clean = _make_clean_run_result(task, passes=[True] * 2)
+    agent = _LengthGatedAgent(fail_above_tokens=30_000, ground_truth="GROUND_TRUTH")
+    dim = asyncio.run(
+        measure_robustness(
+            model="m",
+            tasks=[task],
+            clean_run_results=[clean],
+            agent=agent,
+            rubric_client=None,
+            kinds=["long_context"],
+            reps=2,
+            long_context_lengths=[4_000, 64_000],
+            aggregate_seed=0,
+        )
+    )
+    assert set(dim.sub_metrics.keys()) == {"long_context"}
+    sub = dim.sub_metrics["long_context"]
+    assert isinstance(sub, LongContextResult)
+    # 4k passes (under threshold), 64k fails (over threshold).
+    assert sub.success_rates[0] == pytest.approx(1.0)
+    assert sub.success_rates[1] == pytest.approx(0.0)
+
+
+def test_long_context_result_roundtrips_through_json() -> None:
+    """RobustnessDimension's union accepts LongContextResult via Pydantic discrimination."""
+    from steadfast.metrics.robustness import RobustnessDimension
+
+    lengths = list(DEFAULT_LONG_CONTEXT_LENGTHS)
+    per_task = [_step_curve_task_result(f"t{i}", lengths=lengths) for i in range(3)]
+    result = _aggregate_long_context_result(
+        per_task=per_task,
+        lengths=lengths,
+        aggregate_seed=0,
+        n_resamples=200,
+        confidence_level=0.95,
+    )
+    dim = RobustnessDimension(
+        model="m",
+        n_tasks=3,
+        sub_metrics={"long_context": result},
+    )
+    payload = dim.model_dump_json()
+    rebuilt = RobustnessDimension.model_validate_json(payload)
+    assert isinstance(rebuilt.sub_metrics["long_context"], LongContextResult)
+    assert rebuilt.sub_metrics["long_context"].fit_converged is True

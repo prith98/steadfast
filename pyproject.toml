@@ -45,6 +45,20 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+# Optional extras for the framework adapters. Each adapter wraps a
+# third-party agent toolkit and pulls in its dependencies only when the
+# user opts in. Install via e.g. ``pip install steadfast[langgraph]``.
+# Per ADR-0006 §A — the LangGraph adapter is a v0.1 surface; the
+# OpenAI Agents SDK adapter will follow the same extras pattern when it
+# lands. Keeping these out of the core dependency list preserves the
+# "build on, don't reinvent" stance from CLAUDE.md without forcing every
+# Steadfast user to pull ~50 MB of LangChain transitive closure.
+langgraph = [
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+]
+
 [project.scripts]
 steadfast = "steadfast.cli:main"
 
@@ -124,7 +138,18 @@ warn_unused_ignores = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "google.genai.*", "agentevals.*", "jsonschema.*"]
+module = [
+    "scipy.*",
+    "google.genai.*",
+    "agentevals.*",
+    "jsonschema.*",
+    # Optional extras — installed only when the user opts into the
+    # corresponding adapter. The adapter modules guard runtime imports
+    # with an explicit ``ImportError`` when the extra isn't installed,
+    # so mypy seeing "missing imports" here matches the runtime contract.
+    "langgraph.*",
+    "langchain_core.*",
+]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
