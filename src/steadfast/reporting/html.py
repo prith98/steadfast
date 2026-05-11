@@ -29,9 +29,10 @@ from __future__ import annotations
 import datetime
 import html
 import json
+import math
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TypeVar
+from typing import Final, TypeVar
 
 from pydantic import BaseModel
 
@@ -46,6 +47,7 @@ from steadfast.metrics.consistency import OutputConsistencyResult
 from steadfast.metrics.robustness import (
     ContradictionResult,
     LongContextResult,
+    LongContextTaskResult,
     RobustnessDimension,
     RobustnessSubMetricResult,
 )
@@ -57,6 +59,7 @@ _CSS = """
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        max-width: 1100px; margin: 2em auto; padding: 0 1.5em; color: #222; }
 h1, h2, h3 { color: #111; }
+h3 { margin-top: 1.5em; }
 table { border-collapse: collapse; width: 100%; margin: 1em 0; }
 th, td { padding: 0.5em 0.75em; border-bottom: 1px solid #e0e0e0; text-align: left;
          font-variant-numeric: tabular-nums; }
@@ -73,6 +76,19 @@ code { background: #f5f5f5; padding: 0.1em 0.3em; border-radius: 3px;
        font-family: ui-monospace, SF Mono, Menlo, monospace; }
 .section { margin-bottom: 2.5em; }
 .subtle { color: #666; font-size: 0.9em; }
+.lc-cell { min-width: 360px; }
+.lc-plot { display: block; margin: 0 0 0.4em 0; }
+.lc-plot .lc-axis { stroke: #aaa; stroke-width: 1; }
+.lc-plot .lc-grid { stroke: #eee; stroke-width: 1; }
+.lc-plot .lc-tick { fill: #666; font-size: 9px; font-family: ui-monospace, monospace; }
+.lc-plot .lc-axis-label { fill: #444; font-size: 10px;
+                          font-family: -apple-system, sans-serif; }
+.lc-plot .lc-point { fill: #1a4f8a; }
+.lc-plot .lc-errorbar { stroke: #1a4f8a; stroke-width: 1.5; }
+.lc-plot .lc-fit { fill: none; stroke: #b25700; stroke-width: 1.5; stroke-dasharray: none; }
+.lc-plot .lc-l50 { stroke: #b25700; stroke-width: 1; stroke-dasharray: 2 2; }
+.lc-plot .lc-l50-label { fill: #b25700; font-size: 9px;
+                         font-family: ui-monospace, monospace; }
 """.strip()
 
 
@@ -402,26 +418,46 @@ def _render_contradiction_cell(sub: ContradictionResult) -> str:
 
 
 def _render_long_context_cell(sub: LongContextResult) -> str:
-    """Render the long-context cell — empirical curve summary + sigmoid fit.
+    """Render the long-context cell — inline SVG curve + sigmoid + L_50.
 
-    Minimal v0.1 cell: one line of empirical pass-rates across the tier
-    ladder, plus the fitted slope and L_50 with their CIs when the
-    sigmoid converged. The full SVG-curve rendering lands Friday per
-    ``docs/WEEK_2.md`` §Friday; this stub keeps the HTML report
-    functional in the meantime and exercises the v0.1 reporting surface
-    for the long-context dimension end-to-end.
+    Per ``docs/WEEK_2.md`` §Friday: empirical curve as inline static SVG
+    line plot with the fitted sigmoid overlay; the slope / slope CI /
+    L_50 / L_50 CI render as a labeled strip below the plot.
+
+    Layout (320 x 180 viewBox, log10 x-axis):
+
+    * Plot area:  x ∈ [40, 290], y ∈ [20, 150] in SVG coords (y inverted).
+    * X axis: ``log10(tokens)``; tick labels at the measured tiers.
+    * Y axis: success rate ∈ [0, 1]; ticks at 0 / 0.5 / 1.
+    * Empirical points (filled dots) at the tier centers with vertical
+      Wilson-CI error bars.
+    * Fitted sigmoid overlay sampled at 80 equally-spaced ``log10(L)``
+      points across the plot range, only when ``fit_converged is True``.
+    * L_50 marker — dashed vertical line at ``log10(L_50)`` with a small
+      label — only when ``fit_converged is True`` AND the value falls
+      within the plotted x-range. Out-of-range L_50 (e.g., a fit that
+      places the 50%-point far below the smallest measured tier) is
+      omitted from the plot so the visual doesn't claim a value the
+      plot can't justify.
+
+    On the empty / no-measurement path the cell falls back to a single
+    warn line with the ``reason``, parallel to
+    :func:`_render_contradiction_cell` on its N/A path.
     """
     if not sub.success_rates:
         reason = sub.reason or "no measurement"
         return f"<span class='warn'>{_h(reason)}</span>"
-    curve_parts: list[str] = []
-    for tier_idx, rate in zip(sub.measured_length_indices, sub.success_rates, strict=True):
-        length = sub.lengths[tier_idx]
-        ci = sub.success_cis[sub.measured_length_indices.index(tier_idx)]
-        curve_parts.append(
-            f"<div>{length:,}: {rate:.3f} "
-            f"<span class='ci'>[{ci.ci_lower:.3f}, {ci.ci_upper:.3f}]</span></div>"
-        )
+
+    measured_lengths = [sub.lengths[i] for i in sub.measured_length_indices]
+    svg = _build_long_context_svg(
+        lengths=measured_lengths,
+        rates=sub.success_rates,
+        cis=sub.success_cis,
+        fit_converged=sub.fit_converged,
+        slope=sub.slope,
+        l50=sub.l50,
+    )
+
     if sub.fit_converged and sub.slope is not None and sub.l50 is not None:
         slope_ci = ""
         if sub.slope_ci_lower is not None and sub.slope_ci_upper is not None:
@@ -433,13 +469,406 @@ def _render_long_context_cell(sub: LongContextResult) -> str:
             l50_ci = f" <span class='ci'>[{sub.l50_ci_lower:,.0f}, {sub.l50_ci_upper:,.0f}]</span>"
         fit_line = (
             f"<div class='subtle'>slope {sub.slope:+.2f}{slope_ci} "
-            f"&nbsp; L<sub>50</sub> {sub.l50:,.0f}{l50_ci}</div>"
+            f"&nbsp;&middot;&nbsp; L<sub>50</sub> {sub.l50:,.0f}{l50_ci}</div>"
         )
     elif sub.reason:
         fit_line = f"<div class='warn'>{_h(sub.reason)}</div>"
     else:
-        fit_line = ""
-    return "".join(curve_parts) + fit_line
+        fit_line = "<div class='subtle'>fit not converged; empirical curve only</div>"
+
+    return f"<div class='lc-cell'>{svg}{fit_line}</div>"
+
+
+# ---------------------------------------------------------------------------
+# Long-context SVG plot — stdlib-only inline rendering
+# ---------------------------------------------------------------------------
+
+
+# Plot geometry constants. Tuned to fit a 360-px-wide table cell without
+# horizontal overflow; the 320x180 viewBox keeps proportions stable when
+# the parent cell rescales.
+_LC_PLOT_VIEWBOX_W: Final[int] = 320
+_LC_PLOT_VIEWBOX_H: Final[int] = 180
+_LC_PLOT_X_LO: Final[float] = 40.0  # left edge of plot area (room for y-axis ticks)
+_LC_PLOT_X_HI: Final[float] = 290.0  # right edge of plot area
+_LC_PLOT_Y_LO: Final[float] = 150.0  # bottom of plot area (SVG y grows down)
+_LC_PLOT_Y_HI: Final[float] = 20.0  # top of plot area
+# X-axis padding around the measured tier ladder — half a log10 unit on
+# each side so the largest / smallest tier points sit inside the plot,
+# not on the frame.
+_LC_PLOT_X_PAD: Final[float] = 0.25
+
+
+def _format_tokens(n: int) -> str:
+    """Render an integer token count compactly (4_000 → '4k', 128_000 → '128k').
+
+    Falls back to a one-decimal megabyte representation for values
+    >= 1M; the v0.1 tier ladder stops at 128k so the M-suffix branch is
+    forward-looking, exercised in tests via a synthetic large-N input.
+    """
+    if n >= 1_000_000:
+        # One decimal place; strip a trailing zero so "2.0M" reads "2M".
+        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    if n >= 1_000:
+        return f"{n // 1000}k"
+    return str(n)
+
+
+def _build_long_context_svg(
+    *,
+    lengths: list[int],
+    rates: list[float],
+    cis: list[WilsonCI],
+    fit_converged: bool,
+    slope: float | None,
+    l50: float | None,
+) -> str:
+    """Return an inline ``<svg>`` plot string for one LongContextResult.
+
+    Pure-stdlib renderer — no matplotlib, no JS, no external assets. The
+    rendered SVG is self-contained and validates as standalone XML.
+
+    ``lengths`` / ``rates`` / ``cis`` are parallel arrays at the measured
+    tier centers (already filtered to skip tiers with zero trials). The
+    sigmoid overlay is drawn when ``fit_converged is True``; the L_50
+    marker is drawn additionally when ``l50`` is inside the plotted
+    x-range.
+    """
+    if not lengths:
+        return ""
+
+    log_tiers = [math.log10(length) for length in lengths]
+    x_log_min = min(log_tiers) - _LC_PLOT_X_PAD
+    x_log_max = max(log_tiers) + _LC_PLOT_X_PAD
+    if x_log_max - x_log_min < 1e-9:
+        # Degenerate single-tier case — widen the x range to a one-log10-
+        # unit window for visual sanity (the empirical point lands in
+        # the middle of the plot rather than at the edge).
+        x_log_min -= 0.5
+        x_log_max += 0.5
+
+    def x_to_px(log_l: float) -> float:
+        return _LC_PLOT_X_LO + (log_l - x_log_min) / (x_log_max - x_log_min) * (
+            _LC_PLOT_X_HI - _LC_PLOT_X_LO
+        )
+
+    def y_to_px(rate: float) -> float:
+        # SVG y grows downward, so rate=1 is at Y_HI (top) and rate=0 at
+        # Y_LO (bottom). Linear interpolation between the two.
+        return _LC_PLOT_Y_LO + rate * (_LC_PLOT_Y_HI - _LC_PLOT_Y_LO)
+
+    parts: list[str] = [
+        f'<svg class="lc-plot" viewBox="0 0 {_LC_PLOT_VIEWBOX_W} {_LC_PLOT_VIEWBOX_H}" '
+        f'width="320" height="180" xmlns="http://www.w3.org/2000/svg" '
+        'role="img" aria-label="long-context success curve">'
+    ]
+
+    # Y gridlines at 0, 0.25, 0.5, 0.75, 1.0. The 0.25/0.75 lines help
+    # the reader interpolate without dominating the plot.
+    for grid_y in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = y_to_px(grid_y)
+        parts.append(
+            f'<line class="lc-grid" x1="{_LC_PLOT_X_LO:.1f}" y1="{y:.1f}" '
+            f'x2="{_LC_PLOT_X_HI:.1f}" y2="{y:.1f}"/>'
+        )
+
+    # Axes drawn after gridlines so the axis sits on top.
+    parts.append(
+        f'<line class="lc-axis" x1="{_LC_PLOT_X_LO:.1f}" y1="{_LC_PLOT_Y_LO:.1f}" '
+        f'x2="{_LC_PLOT_X_HI:.1f}" y2="{_LC_PLOT_Y_LO:.1f}"/>'
+    )
+    parts.append(
+        f'<line class="lc-axis" x1="{_LC_PLOT_X_LO:.1f}" y1="{_LC_PLOT_Y_LO:.1f}" '
+        f'x2="{_LC_PLOT_X_LO:.1f}" y2="{_LC_PLOT_Y_HI:.1f}"/>'
+    )
+
+    for tick_val in (0.0, 0.5, 1.0):
+        y = y_to_px(tick_val)
+        parts.append(
+            f'<text class="lc-tick" x="{_LC_PLOT_X_LO - 4:.1f}" y="{y + 3:.1f}" '
+            f'text-anchor="end">{tick_val:.1f}</text>'
+        )
+
+    for length, log_l in zip(lengths, log_tiers, strict=True):
+        x = x_to_px(log_l)
+        parts.append(
+            f'<text class="lc-tick" x="{x:.1f}" y="{_LC_PLOT_Y_LO + 11:.1f}" '
+            f'text-anchor="middle">{_format_tokens(length)}</text>'
+        )
+
+    # Sigmoid overlay — drawn underneath the empirical points so the
+    # points sit on top of the curve at the measured tiers.
+    if fit_converged and slope is not None:
+        a = _recover_intercept_from_slope_and_l50(slope, l50)
+        if a is not None:
+            sample_count = 80
+            curve_pts: list[str] = []
+            for i in range(sample_count + 1):
+                t = i / sample_count
+                log_l = x_log_min + t * (x_log_max - x_log_min)
+                p = 1.0 / (1.0 + math.exp(-(a + slope * log_l)))
+                curve_pts.append(f"{x_to_px(log_l):.1f},{y_to_px(p):.1f}")
+            parts.append(f'<polyline class="lc-fit" points="{" ".join(curve_pts)}"/>')
+
+    # Empirical points + Wilson error bars.
+    for log_l, rate, ci in zip(log_tiers, rates, cis, strict=True):
+        x = x_to_px(log_l)
+        y_point = y_to_px(rate)
+        # CI bounds — upper bound plots HIGHER on the screen (smaller
+        # SVG y), lower bound plots LOWER (larger SVG y).
+        y_top = y_to_px(ci.ci_upper)
+        y_bot = y_to_px(ci.ci_lower)
+        parts.append(
+            f'<line class="lc-errorbar" x1="{x:.1f}" y1="{y_top:.1f}" '
+            f'x2="{x:.1f}" y2="{y_bot:.1f}"/>'
+        )
+        parts.append(
+            f'<line class="lc-errorbar" x1="{x - 3:.1f}" y1="{y_top:.1f}" '
+            f'x2="{x + 3:.1f}" y2="{y_top:.1f}"/>'
+        )
+        parts.append(
+            f'<line class="lc-errorbar" x1="{x - 3:.1f}" y1="{y_bot:.1f}" '
+            f'x2="{x + 3:.1f}" y2="{y_bot:.1f}"/>'
+        )
+        parts.append(f'<circle class="lc-point" cx="{x:.1f}" cy="{y_point:.1f}" r="3"/>')
+
+    if fit_converged and l50 is not None and l50 > 0:
+        log_l50 = math.log10(l50)
+        if x_log_min <= log_l50 <= x_log_max:
+            x = x_to_px(log_l50)
+            parts.append(
+                f'<line class="lc-l50" x1="{x:.1f}" y1="{_LC_PLOT_Y_HI:.1f}" '
+                f'x2="{x:.1f}" y2="{_LC_PLOT_Y_LO:.1f}"/>'
+            )
+            parts.append(
+                f'<text class="lc-l50-label" x="{x + 3:.1f}" y="{_LC_PLOT_Y_HI + 8:.1f}">'
+                f"L50 {_format_tokens(round(l50))}</text>"
+            )
+
+    # Axis labels.
+    parts.append(
+        f'<text class="lc-axis-label" x="{(_LC_PLOT_X_LO + _LC_PLOT_X_HI) / 2:.1f}" '
+        f'y="{_LC_PLOT_Y_LO + 24:.1f}" text-anchor="middle">'
+        "tokens (log10 scale)</text>"
+    )
+    y_mid = (_LC_PLOT_Y_HI + _LC_PLOT_Y_LO) / 2
+    parts.append(
+        f'<text class="lc-axis-label" x="12" y="{y_mid:.1f}" text-anchor="middle" '
+        f'transform="rotate(-90 12,{y_mid:.1f})">success rate</text>'
+    )
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _recover_intercept_from_slope_and_l50(slope: float, l50: float | None) -> float | None:
+    """Recover the sigmoid intercept ``a`` from reported ``slope`` and ``l50``.
+
+    The fit serialized in :class:`LongContextResult` carries the slope
+    coefficient ``b`` and the derived ``L_50`` token count. To re-evaluate
+    the sigmoid for the SVG overlay we need ``a`` as well; from
+    ``L_50 = 10^(-a/b)`` we have ``a = -b · log10(L_50)``. Returns
+    ``None`` when L_50 is missing or non-positive (e.g., the
+    convergence-failure path before this branch is even reached).
+    """
+    if l50 is None or l50 <= 0:
+        return None
+    return -slope * math.log10(l50)
+
+
+def _render_robustness_per_task_section(
+    target_models: list[str],
+    output_dir: Path,
+) -> str:
+    """Per-task robustness drill-down — one table per (kind, model) shape.
+
+    The cross-task summary in :func:`_render_robustness_section` collapses
+    every task into a single number per (model, kind). Per
+    ``docs/WEEK_2.md`` §Friday item 3 the report also surfaces the per-
+    task breakdown so a reader can see *which* tasks drove a brittle
+    delta vs an averaging artifact. The three shapes:
+
+    * **Typo / distractor**: Task | n_clean | n_perturbed | clean rate
+      | perturbed rate | delta. One table per (kind, model) so model
+      comparisons line up across rows.
+    * **Long-context**: Task | per-tier success rate (n/N) for each
+      measured tier in the dimension. One table per model.
+
+    Returns the empty string if no per-task results are available; a
+    benchmark that ran only typo+distractor still gets a useful table,
+    long-context-only runs surface their per-task curves alone.
+    """
+    dims: dict[str, RobustnessDimension] = {}
+    for model in target_models:
+        dim = _safe_load(output_dir / _slug(model) / "robustness.json", RobustnessDimension)
+        if dim is not None:
+            dims[model] = dim
+    if not dims:
+        return ""
+
+    sections: list[str] = []
+    for kind in ("typo", "distractor"):
+        table = _render_delta_per_task_table(
+            kind=kind,
+            target_models=target_models,
+            dims=dims,
+        )
+        if table:
+            sections.append(table)
+
+    long_context_block = _render_long_context_per_task_block(
+        target_models=target_models,
+        dims=dims,
+    )
+    if long_context_block:
+        sections.append(long_context_block)
+
+    if not sections:
+        return ""
+
+    return f"""
+<section class="section">
+  <h2>Robustness — per-task detail</h2>
+  <p class="subtle">Drill-down on the cross-task summary above. Per-task
+  rates surface which tasks anchor the aggregate delta; tasks where the
+  perturbation degraded performance dominate the negative-delta tail in
+  the summary. Long-context per-task curves expose whether degradation
+  is uniform across tasks or driven by a subset.</p>
+  {"".join(sections)}
+</section>
+"""
+
+
+def _render_delta_per_task_table(
+    *,
+    kind: str,
+    target_models: list[str],
+    dims: dict[str, RobustnessDimension],
+) -> str:
+    """Per-task delta table for typo / distractor — one table, models as sections.
+
+    Each model's per-task results are gathered from
+    ``dims[model].sub_metrics[kind].per_task`` and rendered as a sub-
+    table under an ``<h3>`` model header. Models that don't have this
+    kind in their sub_metrics map are skipped.
+    """
+    per_model_blocks: list[str] = []
+    for model in target_models:
+        dim = dims.get(model)
+        if dim is None:
+            continue
+        sub = dim.sub_metrics.get(kind)
+        if not isinstance(sub, RobustnessSubMetricResult):
+            continue
+        if not sub.per_task:
+            continue
+        rows: list[str] = [
+            "<tr>"
+            "<th>Task</th>"
+            "<th>Clean rate</th>"
+            "<th>Perturbed rate</th>"
+            "<th>Delta</th>"
+            "<th>n (clean / perturbed)</th>"
+            "</tr>"
+        ]
+        for ptr in sub.per_task:
+            delta_cls = "passed" if ptr.delta >= 0 else "failed"
+            rows.append(
+                "<tr>"
+                f"<td><code>{_h(ptr.task_id)}</code></td>"
+                f"<td>{ptr.clean_rate:.3f}</td>"
+                f"<td>{ptr.perturbed_rate:.3f}</td>"
+                f"<td class='{delta_cls}'>{ptr.delta:+.3f}</td>"
+                f"<td><span class='subtle'>{ptr.n_reps_clean} / {ptr.n_reps_perturbed}</span></td>"
+                "</tr>"
+            )
+        per_model_blocks.append(f"<h3><code>{_h(model)}</code></h3><table>{''.join(rows)}</table>")
+
+    if not per_model_blocks:
+        return ""
+
+    return f"<h3 style='margin-top:1.5em'>{_h(kind)} — per task</h3>{''.join(per_model_blocks)}"
+
+
+def _render_long_context_per_task_block(
+    *,
+    target_models: list[str],
+    dims: dict[str, RobustnessDimension],
+) -> str:
+    """Per-task long-context table — one table per model with tier columns.
+
+    Per WEEK_2.md §Friday: surface the empirical curve at the per-task
+    grain so readers can spot tasks that degrade earlier than the
+    aggregate suggests. Each cell shows the per-(task, tier) rate
+    formatted as ``passes/N`` (no Wilson CI per cell — the per-tier
+    rates are already aggregated across reps within a task, and the
+    aggregate Wilson CI shown in the summary plot is the per-tier
+    cross-task CI).
+    """
+    per_model_blocks: list[str] = []
+    for model in target_models:
+        dim = dims.get(model)
+        if dim is None:
+            continue
+        sub = dim.sub_metrics.get("long_context")
+        if not isinstance(sub, LongContextResult):
+            continue
+        if not sub.per_task:
+            continue
+        per_model_blocks.append(_render_long_context_per_task_table(model, sub))
+
+    if not per_model_blocks:
+        return ""
+
+    return f"<h3 style='margin-top:1.5em'>long-context — per task</h3>{''.join(per_model_blocks)}"
+
+
+def _render_long_context_per_task_table(
+    model: str,
+    sub: LongContextResult,
+) -> str:
+    """Single per-task table for long-context under one model."""
+    # Header row — one column per measured tier (the aggregate
+    # measured_length_indices, which is the union across tasks that
+    # contributed at any tier).
+    header_cells = ["<th>Task</th>"]
+    for tier_idx in sub.measured_length_indices:
+        header_cells.append(f"<th>{_format_tokens(sub.lengths[tier_idx])}</th>")
+    rows = ["<tr>" + "".join(header_cells) + "</tr>"]
+
+    for task in sub.per_task:
+        cells = [f"<td><code>{_h(task.task_id)}</code></td>"]
+        for tier_idx in sub.measured_length_indices:
+            cell = _render_long_context_per_task_cell(task, tier_idx)
+            cells.append(f"<td>{cell}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    return f"<h3><code>{_h(model)}</code></h3><table>{''.join(rows)}</table>"
+
+
+def _render_long_context_per_task_cell(
+    task: LongContextTaskResult,
+    tier_idx: int,
+) -> str:
+    """One cell of the per-task long-context table — rate (n/N) or N/A."""
+    # ``tier_idx`` indexes into ``task.lengths`` (which equals the
+    # dimension's ``lengths``). Tasks that skipped this tier (input too
+    # long) have an empty per-tier passes list and a None rate.
+    if tier_idx >= len(task.passes_per_length):
+        return _na()
+    passes = task.passes_per_length[tier_idx]
+    if not passes:
+        return _na()
+    rate = task.rates_per_length[tier_idx]
+    if rate is None:
+        return _na()
+    n_pass = sum(passes)
+    n_total = len(passes)
+    rate_cls = "passed" if rate >= 0.5 else "failed"
+    return (
+        f"<span class='{rate_cls}'>{rate:.2f}</span> "
+        f"<span class='subtle'>({n_pass}/{n_total})</span>"
+    )
 
 
 def _render_pass_rate_section(
@@ -569,6 +998,7 @@ def write_html_report(
         _render_calibration_section(target_models, output_dir),
         _render_consistency_section(target_models, output_dir),
         _render_robustness_section(target_models, output_dir),
+        _render_robustness_per_task_section(target_models, output_dir),
         _render_pass_rate_section(target_models, output_dir, benchmark_name),
         _render_footer(),
     ]

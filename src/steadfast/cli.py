@@ -67,10 +67,10 @@ from steadfast.tracing.exporters import ExporterKind
 
 # Metric dimensions that ``--metrics`` accepts. Safety lands in week 3;
 # surfacing it as a parser error today (rather than silently warning)
-# matches the v0.1 scope-discipline commitment. Robustness shipped
-# 2026-05-12 (week 2 / Tuesday) — typo + distractor sub-metrics; the
-# contradiction and long-context sub-metrics ship later in week 2 and
-# extend ``_SUPPORTED_ROBUSTNESS_KINDS`` from ``metrics.robustness``.
+# matches the v0.1 scope-discipline commitment. Robustness sub-metrics
+# (typo, distractor, contradiction, long_context) are selected via the
+# ``--robustness-types`` flag and validated against
+# ``_SUPPORTED_ROBUSTNESS_KINDS`` from ``metrics.robustness``.
 _VALID_METRICS: Final[frozenset[str]] = frozenset({"consistency", "calibration", "robustness"})
 
 # Benchmarks ship under ``benchmarks/`` at the repo root. Resolution rule
@@ -222,8 +222,9 @@ def parse_robustness_types(spec: str | None) -> frozenset[str]:
 
     Empty / None → all supported kinds (the methodology-default coverage
     when ``--metrics robustness`` is on its own). Unknown kinds raise
-    :class:`typer.BadParameter` with the supported set; ``SUPPORTED_KINDS``
-    grows as week 2 ships contradiction (Wed) and long_context (Thu).
+    :class:`typer.BadParameter` with the supported set. The v0.1
+    supported set is typo / distractor / contradiction / long_context
+    per METHODOLOGY §2.
     """
     if not spec:
         return frozenset(_SUPPORTED_ROBUSTNESS_KINDS)
@@ -327,7 +328,7 @@ def bench(
             "--robustness-types",
             help=(
                 "Comma-separated robustness sub-metrics. Default: all supported. "
-                "Valid (v0.1 / week 2 / Tuesday): typo, distractor."
+                "Valid (v0.1): typo, distractor, contradiction, long_context."
             ),
         ),
     ] = None,

@@ -512,3 +512,341 @@ def test_html_report_escapes_user_strings(tmp_path: Path) -> None:
     assert "<script>alert(1)</script>" not in contents
     assert "&lt;script&gt;" in contents
     assert "m&lt;x&gt;" in contents
+
+
+# ---------------------------------------------------------------------------
+# Long-context rendering: SVG curve + per-task drill-down
+# ---------------------------------------------------------------------------
+
+
+def _long_context_for(
+    model: str,
+    *,
+    fit_converged: bool = True,
+    slope: float | None = -1.5,
+    l50: float | None = 32_000,
+    n_tasks: int = 3,
+    lengths: tuple[int, ...] = (4_000, 16_000, 64_000, 128_000),
+    skip_tier_for_first_task: bool = False,
+) -> RobustnessDimension:
+    """Build a RobustnessDimension carrying a LongContextResult.
+
+    The synthetic curve: ``[1.0, 1.0, 0.0, 0.0]`` pooled across tasks,
+    which is exactly the step-curve fixture used in the metric tests.
+    The slope / l50 inputs let the test override the fit values
+    independently of the empirical points.
+    """
+    from steadfast.metrics.robustness import (
+        LongContextResult,
+        LongContextTaskResult,
+    )
+    from steadfast.stats.wilson import wilson_ci
+
+    rates = [1.0, 1.0, 0.0, 0.0]
+    n_per_tier = 4 * n_tasks
+    success_cis = []
+    for rate in rates:
+        n_pass = round(rate * n_per_tier)
+        success_cis.append(wilson_ci(n_pass, n_per_tier))
+
+    per_task = []
+    for i in range(n_tasks):
+        passes_per_length: list[list[bool]] = []
+        rates_per_length: list[float | None] = []
+        for tier_idx, rate in enumerate(rates):
+            if skip_tier_for_first_task and i == 0 and tier_idx == len(lengths) - 1:
+                # First task skipped the largest tier (input too long).
+                passes_per_length.append([])
+                rates_per_length.append(None)
+            else:
+                passes_per_length.append([rate >= 0.5] * 4)
+                rates_per_length.append(rate)
+        per_task.append(
+            LongContextTaskResult(
+                task_id=f"t{i}",
+                lengths=list(lengths),
+                passes_per_length=passes_per_length,
+                rates_per_length=rates_per_length,
+                perturbed_input_previews_per_length=[[""] * 4 for _ in range(len(lengths))],
+                seed=i,
+            )
+        )
+
+    sub = LongContextResult(
+        kind="long_context",
+        n_tasks=n_tasks,
+        lengths=list(lengths),
+        success_rates=rates,
+        success_cis=success_cis,
+        measured_length_indices=list(range(len(lengths))),
+        slope=slope if fit_converged else None,
+        slope_ci_lower=-2.0 if fit_converged else None,
+        slope_ci_upper=-1.0 if fit_converged else None,
+        l50=l50 if fit_converged else None,
+        l50_ci_lower=25_000.0 if fit_converged else None,
+        l50_ci_upper=40_000.0 if fit_converged else None,
+        fit_converged=fit_converged,
+        confidence_level=0.95 if fit_converged else None,
+        n_resamples=10_000 if fit_converged else None,
+        per_task=per_task,
+        reason=None if fit_converged else "sigmoid fit did not converge",
+    )
+    return RobustnessDimension(
+        model=model,
+        n_tasks=n_tasks,
+        sub_metrics={"long_context": sub},
+    )
+
+
+def test_html_report_long_context_renders_svg(tmp_path: Path) -> None:
+    """Long-context cell embeds an inline SVG with curve, points, and fit overlay."""
+    model = "claude-opus-4-7"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _long_context_for(model)
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+
+    # The SVG element renders inline with the right structural classes.
+    assert 'class="lc-plot"' in contents
+    assert "viewBox=" in contents
+    # Tier labels are formatted compactly.
+    assert ">4k</text>" in contents
+    assert ">128k</text>" in contents
+    # The fit overlay polyline renders when fit_converged.
+    assert 'class="lc-fit"' in contents
+    # The L_50 marker renders inside the plotted range (L_50=32k is between 4k and 128k).
+    assert 'class="lc-l50"' in contents
+    assert "L50 32k" in contents
+    # Summary line under the plot carries slope and L_50 with CIs.
+    assert "slope -1.50" in contents
+    assert "L<sub>50</sub> 32,000" in contents
+
+
+def test_html_report_long_context_fit_failure_hides_overlay(tmp_path: Path) -> None:
+    """fit_converged=False → no sigmoid polyline, no L_50 marker, warn reason shown."""
+    model = "gpt-5.2"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _long_context_for(
+        model,
+        fit_converged=False,
+        slope=None,
+        l50=None,
+    )
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+
+    # SVG still renders (empirical points + axes) but no fit polyline / L_50 marker.
+    assert 'class="lc-plot"' in contents
+    assert 'class="lc-point"' in contents
+    assert 'class="lc-fit"' not in contents
+    assert 'class="lc-l50"' not in contents
+    # Reason line surfaces the non-convergence.
+    assert "did not converge" in contents
+
+
+def test_html_report_long_context_l50_out_of_range_not_drawn(tmp_path: Path) -> None:
+    """L_50 outside the plotted x-range → marker omitted from the SVG.
+
+    A fit that places L_50 at e.g. 1k (below the 4k smallest tier) shouldn't
+    paint a marker that visually claims a degradation point the data can't
+    support.
+    """
+    model = "m"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _long_context_for(model, slope=-1.5, l50=500.0)  # 500 < 4k smallest tier
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # Curve still drawn, but L_50 marker line / label omitted.
+    assert 'class="lc-fit"' in contents
+    assert 'class="lc-l50"' not in contents
+    # Summary strip still reports the value textually — only the plot
+    # marker is suppressed, not the numeric report.
+    assert "L<sub>50</sub> 500" in contents
+
+
+def test_html_report_long_context_empty_renders_warn(tmp_path: Path) -> None:
+    """No measured tiers → warn cell with reason, no SVG."""
+    from steadfast.metrics.robustness import LongContextResult
+
+    model = "m"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    empty = LongContextResult(
+        kind="long_context",
+        n_tasks=0,
+        lengths=[4_000, 16_000, 64_000, 128_000],
+        success_rates=[],
+        success_cis=[],
+        measured_length_indices=[],
+        slope=None,
+        slope_ci_lower=None,
+        slope_ci_upper=None,
+        l50=None,
+        l50_ci_lower=None,
+        l50_ci_upper=None,
+        fit_converged=False,
+        confidence_level=None,
+        n_resamples=None,
+        per_task=[],
+        reason="no length tier produced any judged rep",
+    )
+    dim = RobustnessDimension(
+        model=model,
+        n_tasks=0,
+        sub_metrics={"long_context": empty},
+    )
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert 'class="lc-plot"' not in contents
+    assert "no length tier" in contents
+
+
+# ---------------------------------------------------------------------------
+# Per-task robustness drill-down section
+# ---------------------------------------------------------------------------
+
+
+def test_html_report_per_task_section_includes_typo_distractor_tables(tmp_path: Path) -> None:
+    """Per-task drill-down renders a table per (kind, model) for typo + distractor."""
+    model = "claude-opus-4-7"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _robustness_for(model)  # carries typo + distractor with 5 per-task entries each
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # New section heading appears.
+    assert "Robustness — per-task detail" in contents
+    # typo header + at least one per-task row.
+    assert "typo — per task" in contents
+    assert "distractor — per task" in contents
+    # Per-task rows are labeled by task ID.
+    assert "t0" in contents
+    assert "t4" in contents
+    # Column headers for the delta-style table.
+    assert "Clean rate" in contents
+    assert "Perturbed rate" in contents
+    assert "Delta" in contents
+
+
+def test_html_report_per_task_section_includes_long_context_tier_columns(tmp_path: Path) -> None:
+    """Long-context per-task table has one column per measured tier."""
+    model = "m"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _long_context_for(model, n_tasks=2)
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "long-context — per task" in contents
+    # Each tier header is present.
+    assert ">4k</th>" in contents
+    assert ">16k</th>" in contents
+    assert ">64k</th>" in contents
+    assert ">128k</th>" in contents
+    # Per-task rates rendered as ratio (n_pass/N).
+    assert "(4/4)" in contents  # the 4k tier pass row
+    assert "(0/4)" in contents  # the 128k tier fail row
+
+
+def test_html_report_per_task_section_handles_skipped_tier(tmp_path: Path) -> None:
+    """A task that skipped a tier (input too long) renders N/A in that cell."""
+    model = "m"
+    model_dir = tmp_path / model
+    model_dir.mkdir(parents=True)
+    dim = _long_context_for(model, n_tasks=2, skip_tier_for_first_task=True)
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # The 128k tier for t0 should render N/A.
+    assert "N/A" in contents
+    # The other tasks at the same tier still have a numeric cell.
+    assert "(0/4)" in contents
+
+
+def test_html_report_per_task_section_skipped_when_no_robustness_files(tmp_path: Path) -> None:
+    """No per-model robustness.json → no per-task drill-down section."""
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=["m"],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "Robustness — per-task detail" not in contents
+
+
+def test_html_report_long_context_format_tokens_branches() -> None:
+    """Unit test for _format_tokens covering all three branches."""
+    from steadfast.reporting.html import _format_tokens
+
+    assert _format_tokens(500) == "500"
+    assert _format_tokens(4_000) == "4k"
+    assert _format_tokens(128_000) == "128k"
+    assert _format_tokens(2_000_000) == "2M"
+    assert _format_tokens(1_500_000) == "1.5M"
