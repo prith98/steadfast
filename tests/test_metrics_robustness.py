@@ -16,18 +16,23 @@ from decimal import Decimal
 
 import pytest
 
-from steadfast.agent import Agent, AgentResponse, GroundTruth, Task
+from steadfast.agent import Agent, AgentResponse, GroundTruth, Task, ToolCall
 from steadfast.judges.base import Verdict
 from steadfast.metrics.robustness import (
     SUPPORTED_KINDS,
+    ContradictionResult,
     RobustnessSubMetricResult,
     _aggregate_sub_metric,
+    classify_contradiction_response,
+    measure_contradiction_handling,
     measure_distractor_robustness,
     measure_robustness,
     measure_typo_robustness,
 )
+from steadfast.perturbations.contradiction import CORRUPTED_CALLS_METADATA_KEY
 from steadfast.perturbations.distractor import DistractorBank, DistractorSnippet
 from steadfast.runner import RepRecord, RepStatus, RunResult
+from tests.fixtures.contradiction_agents import EchoToolAgent
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -493,9 +498,9 @@ def test_measure_robustness_unknown_kind_raises() -> None:
         )
 
 
-def test_supported_kinds_matches_methodology_v01_tuesday() -> None:
-    """Tuesday's surface is exactly typo + distractor; later days extend."""
-    assert frozenset({"typo", "distractor"}) == SUPPORTED_KINDS
+def test_supported_kinds_includes_typo_distractor_contradiction() -> None:
+    """Wednesday extends Tuesday's surface with contradiction; long_context lands Thursday."""
+    assert frozenset({"typo", "distractor", "contradiction"}) == SUPPORTED_KINDS
 
 
 def test_mismatched_tasks_and_clean_results_raises() -> None:
@@ -512,3 +517,524 @@ def test_mismatched_tasks_and_clean_results_raises() -> None:
                 reps=3,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Contradiction classifier — hand-computed label assertions per ADR-0006 §D
+# ---------------------------------------------------------------------------
+
+
+# Frozen phrase lists for classifier tests — keep small and explicit so the
+# rules' decision logic is the only variable. The full v1 file is exercised
+# via tests/test_perturbations_contradiction.py::test_load_detection_phrases_*.
+_TEST_DETECTION_PHRASES = ["inconsistent", "conflicting", "i cannot reconcile"]
+_TEST_ESCALATION_PHRASES = ["escalating to a human", "i need clarification"]
+
+
+def _classifier_task() -> Task:
+    return _exact_task("t_contra", ground_truth="X", input_text="some question")
+
+
+def test_classifier_detected_when_response_refused() -> None:
+    """Rule 1: response.refused=True → detected, regardless of trajectory or phrases."""
+    response = AgentResponse(answer="something", refused=True, raw_output="REFUSE")
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "detected"
+
+
+def test_classifier_detected_on_phrase_match() -> None:
+    """Rule 1: detection-phrase substring in answer (case-insensitive) → detected."""
+    response = AgentResponse(
+        answer="The records appear inconsistent across both lookups",
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "detected"
+
+
+def test_classifier_detection_phrase_match_is_case_insensitive() -> None:
+    response = AgentResponse(answer="INCONSISTENT data found", refused=False)
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "detected"
+
+
+def test_classifier_retried_on_post_corruption_duplicate_call() -> None:
+    """Rule 2: corrupted call followed by a same-(name, args) call → retried."""
+    tc1 = ToolCall(name="lookup", args={"q": "returns"}, result="CORRUPTED_VALUE")
+    tc2 = ToolCall(name="lookup", args={"q": "returns"}, result="real_value")
+    response = AgentResponse(
+        answer="The answer is real_value",
+        trajectory=[tc1, tc2],
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc1],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "retried_or_escalated"
+
+
+def test_classifier_retried_on_escalation_phrase() -> None:
+    """Rule 2: escalation-phrase substring in answer → retried_or_escalated."""
+    tc = ToolCall(name="lookup", args={"q": "x"}, result="CORRUPTED")
+    response = AgentResponse(
+        answer="I am escalating to a human for further review",
+        trajectory=[tc],
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "retried_or_escalated"
+
+
+def test_classifier_hallucinated_on_fallthrough() -> None:
+    """Rule 3: no refusal, no phrases, no retry → hallucinated."""
+    tc = ToolCall(name="lookup", args={}, result="CORRUPTED")
+    response = AgentResponse(
+        answer="The answer is CORRUPTED",
+        trajectory=[tc],
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "hallucinated"
+
+
+def test_classifier_priority_detected_beats_retried() -> None:
+    """Both rule 1 and rule 2 signals present → detected wins per ADR-0006 §D order."""
+    tc1 = ToolCall(name="lookup", args={"q": "x"}, result="CORRUPTED")
+    tc2 = ToolCall(name="lookup", args={"q": "x"}, result="real")
+    response = AgentResponse(
+        answer="The data is inconsistent — escalating to a human",
+        trajectory=[tc1, tc2],
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc1],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "detected"
+
+
+def test_classifier_priority_refusal_beats_escalation_phrase() -> None:
+    """response.refused short-circuits even if escalation phrase is present."""
+    tc = ToolCall(name="lookup", args={}, result="CORRUPTED")
+    response = AgentResponse(
+        answer="escalating to a human after refusal",
+        refused=True,
+        trajectory=[tc],
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "detected"
+
+
+def test_classifier_pre_corruption_duplicate_does_not_count_as_retry() -> None:
+    """Duplicate calls before the earliest corruption don't satisfy rule 2."""
+    tc1 = ToolCall(name="lookup", args={"q": "x"}, result="real_a")
+    tc2 = ToolCall(name="lookup", args={"q": "x"}, result="real_b")  # duplicate of tc1
+    tc3 = ToolCall(name="other", args={}, result="CORRUPTED_LATE")
+    response = AgentResponse(
+        answer="The answer is something normal",
+        trajectory=[tc1, tc2, tc3],
+        refused=False,
+    )
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc3],  # only the late call is corrupted
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    # tc1/tc2 are duplicates BEFORE the corruption at tc3; tc3 is alone after.
+    # Retry rule cannot fire because no later call repeats tc3's (name, args).
+    assert label == "hallucinated"
+
+
+def test_classifier_empty_corrupted_calls_disables_retry_rule() -> None:
+    """No corrupted calls → retry rule cannot fire (falls through to hallucinated)."""
+    tc1 = ToolCall(name="lookup", args={}, result="real")
+    tc2 = ToolCall(name="lookup", args={}, result="real")  # duplicate, but no corruption
+    response = AgentResponse(answer="ok", trajectory=[tc1, tc2], refused=False)
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "hallucinated"
+
+
+def test_classifier_args_equality_is_structural() -> None:
+    """ToolCall.args dict equality is structural (order-independent)."""
+    tc1 = ToolCall(name="lookup", args={"a": "1", "b": "2"}, result="CORRUPTED")
+    tc2 = ToolCall(
+        name="lookup", args={"b": "2", "a": "1"}, result="real"
+    )  # same args, different insertion order
+    response = AgentResponse(answer="x", trajectory=[tc1, tc2], refused=False)
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc1],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "retried_or_escalated"
+
+
+def test_classifier_different_args_does_not_count_as_retry() -> None:
+    """A later call with different args is not a retry."""
+    tc1 = ToolCall(name="lookup", args={"q": "returns"}, result="CORRUPTED")
+    tc2 = ToolCall(name="lookup", args={"q": "shipping"}, result="real")
+    response = AgentResponse(answer="ok", trajectory=[tc1, tc2], refused=False)
+    label = classify_contradiction_response(
+        _classifier_task(),
+        response,
+        [tc1],
+        detection_phrases=_TEST_DETECTION_PHRASES,
+        escalation_phrases=_TEST_ESCALATION_PHRASES,
+    )
+    assert label == "hallucinated"
+
+
+# ---------------------------------------------------------------------------
+# measure_contradiction_handling — N/A path + integration with EchoToolAgent
+# ---------------------------------------------------------------------------
+
+
+def test_measure_contradiction_n_a_on_toolless_agent() -> None:
+    """Toolless agent → ContradictionResult(value=None, reason=...) per ADR-0004 §G."""
+    task = _exact_task("t_toolless", ground_truth="X")
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=[task],
+            agent=_AlwaysPassAgent("X"),
+            reps=3,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert result.value is None
+    assert result.reason == "agent did not call any tools"
+    assert result.n_reps_with_tools == 0
+    assert result.p_detect is None
+    assert result.ci_detect is None
+    assert result.kind == "contradiction"
+
+
+def test_measure_contradiction_three_vector_with_hallucinating_fixture() -> None:
+    """At p_corruption=1.0 + behavior=hallucinate, all reps fall through to hallucinated."""
+    tasks = [_exact_task(f"t_hall_{i}", ground_truth="X") for i in range(2)]
+    agent = EchoToolAgent(behavior="hallucinate", corruption_probability=1.0)
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=tasks,
+            agent=agent,
+            reps=4,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert result.value == "measured"
+    assert result.n_reps_with_tools == 8  # 2 tasks x 4 reps
+    assert result.p_halluc == pytest.approx(1.0)
+    assert result.p_detect == pytest.approx(0.0)
+    assert result.p_retry == pytest.approx(0.0)
+    # Wilson CIs are bounded; the all-hallucinate cell's lower bound is < 1.0
+    # (Wilson is conservative at p=1.0 and small N).
+    assert result.ci_halluc is not None
+    assert result.ci_halluc.proportion == pytest.approx(1.0)
+    assert result.ci_halluc.ci_lower < 1.0
+
+
+def test_measure_contradiction_three_vector_with_detecting_fixture() -> None:
+    """At p_corruption=1.0 + behavior=detect, all reps land in detected."""
+    tasks = [_exact_task(f"t_det_{i}", ground_truth="X") for i in range(2)]
+    agent = EchoToolAgent(behavior="detect", corruption_probability=1.0)
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=tasks,
+            agent=agent,
+            reps=4,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert result.value == "measured"
+    assert result.p_detect == pytest.approx(1.0)
+    assert result.p_retry == pytest.approx(0.0)
+    assert result.p_halluc == pytest.approx(0.0)
+
+
+def test_measure_contradiction_three_vector_with_retrying_fixture() -> None:
+    """At p_corruption=1.0 + behavior=retry, the retry rule fires on every rep.
+
+    The retry agent re-calls the tool with same args after a corruption.
+    The second call gets tool_call_idx=1 → independent corruption coin at
+    p=1.0 → also corrupted, but the retry rule only requires the duplicate
+    call (regardless of whether the duplicate's result is also corrupted).
+    """
+    tasks = [_exact_task(f"t_retry_{i}", ground_truth="X") for i in range(2)]
+    agent = EchoToolAgent(behavior="retry", corruption_probability=1.0)
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=tasks,
+            agent=agent,
+            reps=4,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert result.value == "measured"
+    assert result.p_retry == pytest.approx(1.0)
+    assert result.p_detect == pytest.approx(0.0)
+    assert result.p_halluc == pytest.approx(0.0)
+
+
+def test_measure_contradiction_per_task_diagnostics_populated() -> None:
+    """Per-task labels + corruption counts populated for drill-down."""
+    tasks = [_exact_task("t_diag", ground_truth="X")]
+    agent = EchoToolAgent(behavior="hallucinate", corruption_probability=1.0)
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=tasks,
+            agent=agent,
+            reps=3,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert len(result.per_task) == 1
+    pt = result.per_task[0]
+    assert pt.task_id == "t_diag"
+    assert pt.kind == "contradiction"
+    assert pt.n_reps_with_tools == 3
+    assert pt.labels == ["hallucinated"] * 3
+    # At corruption_probability=1.0, every call is corrupted → 1 per rep.
+    assert pt.n_corrupted_calls_per_rep == [1, 1, 1]
+
+
+def test_measure_contradiction_uses_default_phrases_when_omitted() -> None:
+    """If phrase lists aren't passed, the metric loads them from the v1 file."""
+    tasks = [_exact_task("t_def", ground_truth="X")]
+    agent = EchoToolAgent(behavior="detect", corruption_probability=1.0)
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=tasks,
+            agent=agent,
+            reps=2,
+        )
+    )
+    # The default v1 file includes "inconsistent" → fixture's DETECTION_PHRASE
+    # ("the records appear inconsistent") matches → label is "detected".
+    assert result.p_detect == pytest.approx(1.0)
+
+
+def test_measure_contradiction_rejects_zero_reps() -> None:
+    task = _exact_task("t_zero", ground_truth="X")
+    with pytest.raises(ValueError, match="reps must be"):
+        asyncio.run(
+            measure_contradiction_handling(
+                tasks=[task],
+                agent=EchoToolAgent(behavior="hallucinate"),
+                reps=0,
+            )
+        )
+
+
+def test_measure_contradiction_handles_arun_failures() -> None:
+    """Arun exceptions don't take down the whole task; failures noted in per_task."""
+
+    class _FlakyAgent(Agent):
+        def __init__(self) -> None:
+            self._n = 0
+
+        async def arun(self, task: Task) -> AgentResponse:
+            self._n += 1
+            if self._n == 2:
+                raise RuntimeError("simulated transient error")
+            return AgentResponse(
+                answer="ok",
+                trajectory=[ToolCall(name="t", args={}, result=EchoToolAgent.GROUND_TRUTH)],
+                cost_usd=Decimal("0"),
+            )
+
+    task = _exact_task("t_flaky", ground_truth="X")
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=[task],
+            agent=_FlakyAgent(),
+            reps=3,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    assert result.value == "measured"
+    assert result.n_reps_with_tools == 2  # 1 of 3 reps failed
+    assert result.per_task[0].notes is not None
+    assert "arun failure" in result.per_task[0].notes
+
+
+# ---------------------------------------------------------------------------
+# measure_robustness — bundling contradiction with delta-style sub-metrics
+# ---------------------------------------------------------------------------
+
+
+def test_measure_robustness_bundles_contradiction_alongside_delta_kinds() -> None:
+    """A run requesting all three kinds returns a dimension with three sub-metrics."""
+    task = _exact_task("t_bundle3", ground_truth=EchoToolAgent.GROUND_TRUTH, input_text="Q")
+    clean = _make_clean_run_result(task, passes=[True] * 3)
+    bank = _bank_with(snippets=[("x", 400, "BG " * 60)])
+
+    dim = asyncio.run(
+        measure_robustness(
+            model="claude-test",
+            tasks=[task],
+            clean_run_results=[clean],
+            agent=EchoToolAgent(behavior="hallucinate", corruption_probability=1.0),
+            rubric_client=None,
+            kinds=["typo", "distractor", "contradiction"],
+            distractor_banks={"test_support": bank},
+            reps=3,
+        )
+    )
+    assert set(dim.sub_metrics.keys()) == {"typo", "distractor", "contradiction"}
+    assert isinstance(dim.sub_metrics["contradiction"], ContradictionResult)
+    assert isinstance(dim.sub_metrics["typo"], RobustnessSubMetricResult)
+
+
+def test_measure_robustness_contradiction_only_does_not_require_distractor_banks() -> None:
+    """Contradiction doesn't read distractor_banks; the call should succeed without one."""
+    task = _exact_task("t_contra_only", ground_truth="X")
+    clean = _make_clean_run_result(task, passes=[True] * 2)
+    dim = asyncio.run(
+        measure_robustness(
+            model="m",
+            tasks=[task],
+            clean_run_results=[clean],
+            agent=EchoToolAgent(behavior="hallucinate", corruption_probability=1.0),
+            rubric_client=None,
+            kinds=["contradiction"],
+            reps=2,
+        )
+    )
+    assert set(dim.sub_metrics.keys()) == {"contradiction"}
+
+
+def test_measure_robustness_dimension_roundtrips_through_json() -> None:
+    """RobustnessDimension serializes/deserializes with the union of sub-metric types."""
+    task = _exact_task("t_json", ground_truth=EchoToolAgent.GROUND_TRUTH)
+    clean = _make_clean_run_result(task, passes=[True] * 2)
+
+    dim = asyncio.run(
+        measure_robustness(
+            model="m",
+            tasks=[task],
+            clean_run_results=[clean],
+            agent=EchoToolAgent(behavior="hallucinate", corruption_probability=1.0),
+            rubric_client=None,
+            kinds=["typo", "contradiction"],
+            reps=2,
+        )
+    )
+
+    # Pydantic 2 round-trip with the union type — discriminated by `kind`.
+    from steadfast.metrics.robustness import RobustnessDimension
+
+    payload = dim.model_dump_json()
+    rebuilt = RobustnessDimension.model_validate_json(payload)
+    assert isinstance(rebuilt.sub_metrics["contradiction"], ContradictionResult)
+    assert isinstance(rebuilt.sub_metrics["typo"], RobustnessSubMetricResult)
+    assert rebuilt.sub_metrics["contradiction"].p_halluc == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Corruption metadata convention — agent → metric handoff
+# ---------------------------------------------------------------------------
+
+
+def test_echotool_agent_populates_corruption_metadata() -> None:
+    """The fixture sets the metadata key the metric layer reads."""
+    task = _exact_task("t_meta", ground_truth="X")
+    agent = EchoToolAgent(behavior="hallucinate", corruption_probability=1.0)
+    response = asyncio.run(agent.arun(task))
+    assert CORRUPTED_CALLS_METADATA_KEY in response.metadata
+    raw = response.metadata[CORRUPTED_CALLS_METADATA_KEY]
+    # JSON-encoded list of indices; at p=1.0 the index 0 must be present.
+    import json
+
+    indices = json.loads(str(raw))
+    assert 0 in indices
+
+
+def test_metric_handles_malformed_corruption_metadata() -> None:
+    """Malformed metadata silently degrades — rep counted, retry rule simply can't fire."""
+
+    class _BadMetadataAgent(Agent):
+        async def arun(self, task: Task) -> AgentResponse:
+            del task
+            return AgentResponse(
+                answer="The answer is CORRUPTED",
+                trajectory=[
+                    ToolCall(name="t", args={}, result="CORRUPTED"),
+                    ToolCall(name="t", args={}, result="CORRUPTED"),  # duplicate
+                ],
+                metadata={CORRUPTED_CALLS_METADATA_KEY: "this is not valid json"},
+                cost_usd=Decimal("0"),
+            )
+
+    task = _exact_task("t_bad_meta", ground_truth="X")
+    result = asyncio.run(
+        measure_contradiction_handling(
+            tasks=[task],
+            agent=_BadMetadataAgent(),
+            reps=2,
+            detection_phrases=_TEST_DETECTION_PHRASES,
+            escalation_phrases=_TEST_ESCALATION_PHRASES,
+        )
+    )
+    # Without valid corrupted-calls metadata, the retry rule can't fire even
+    # though there's a duplicate call — so each rep falls through to hallucinated.
+    assert result.value == "measured"
+    assert result.p_halluc == pytest.approx(1.0)
+    assert result.n_reps_with_tools == 2

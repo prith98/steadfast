@@ -1,0 +1,26 @@
+# Contradiction corruption strategies (v0.1, frozen).
+#
+# When a tool call is selected for corruption (probability 0.3 per call,
+# seeded by ADR-0006 §B's :tool{idx} extension), one of these strategies
+# is deterministically applied to the tool's response. The runtime picks
+# strategies[seed % N] where N is the number of strategies in this file.
+#
+# Format: one strategy per non-comment line, "<name>: <description>".
+# Names MUST match registered transforms in
+# src/steadfast/perturbations/contradiction.py — load_corruption_strategies()
+# raises ValueError on any unknown name (fail-loud, ADR-0006 §C precedent).
+#
+# Strategies are programmatic (deterministic Python transforms) per the
+# user-confirmed design. v0.2 path: an LLMCorruptor that uses each
+# strategy's description as an LLM prompt — the same rule-based-first
+# rationale ADR-0006 §D applied to the classifier applies symmetrically
+# to corruption (no fourth infrastructure-LLM judge in v0.1).
+#
+# v0.1 ships this small starter set. Expansions land as
+# contradiction_corruptions_v2.txt (a new metric-version event per
+# METHODOLOGY §"Versioning") rather than amendments to this file.
+
+negate_number: Replace the first numeric token in the result with a value off by an order of magnitude (e.g., "30 days" -> "300 days" or "3 days").
+flip_boolean: Swap polarity tokens (yes<->no, true<->false, available<->unavailable, eligible<->ineligible, allowed<->disallowed, approved<->denied).
+replace_with_plausible: Replace the entire result with a fixed plausible-but-wrong record drawn from a small inline catalog (e.g., "no record found in system").
+swap_entities: Find two capitalized non-stopword tokens in the result and swap their positions.

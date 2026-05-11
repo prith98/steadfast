@@ -12,6 +12,111 @@ here.
 
 ### Added
 
+- **Robustness dimension — contradiction handling sub-metric**
+  (`docs/METHODOLOGY.md` §2.3 / ADR-0006 §D). Third robustness sub-metric;
+  3-way categorical (`{detected, retried_or_escalated, hallucinated}`)
+  with per-cell Wilson 95% CIs (the three CIs are not jointly bounded —
+  documented in `ContradictionResult.notes`). New
+  `src/steadfast/perturbations/contradiction.py` exposes the per-call
+  primitives a tool-using agent wires into its own tool loop:
+  `should_corrupt(task_id, tool_call_idx, probability=0.3)` (Bernoulli
+  coin seeded by ADR-0006 §B's `:tool{idx}` extension),
+  `corrupt_tool_result(...)` (programmatic strategy dispatch:
+  `negate_number`, `flip_boolean`, `replace_with_plausible`,
+  `swap_entities`), and the `load_corruption_strategies` /
+  `load_detection_phrases` loaders for the two new frozen prompt files.
+  Strategy registry is fail-loud against unknown names per ADR-0006 §C
+  precedent. **Strategies are programmatic, not LLM-driven** —
+  ADR-0006 §D's "no fourth infrastructure-LLM judge" rationale extended
+  symmetrically to the corruption side; v0.2 may introduce an
+  `LLMCorruptor`.
+- **Rule-based contradiction classifier**
+  (`src/steadfast/metrics/robustness.py::classify_contradiction_response`).
+  Three decision rules in ADR-0006 §D priority order: `detected` if
+  `response.refused` or any phrase from
+  `prompts/contradiction_detection_phrases_v1.txt` appears in the
+  (lowercased) answer; `retried_or_escalated` if the trajectory shows a
+  same-`(name, args)` tool call after a corrupted call OR an escalation
+  phrase appears; `hallucinated` otherwise. The retry rule's "after"
+  semantics use the earliest-corruption index — duplicate calls before
+  any corruption do NOT count as retries.
+- **Contradiction signaling convention** — agents wire corrupted-call
+  indices into `response.metadata["steadfast.contradiction.corrupted_call_indices"]`
+  as a JSON-encoded `list[int]`, exported via
+  `CORRUPTED_CALLS_METADATA_KEY` from
+  `steadfast.perturbations.contradiction`. The metric's
+  `_extract_corrupted_calls` helper parses and slices `trajectory`;
+  malformed metadata silently degrades to an empty list (rep is still
+  counted, but the retry rule simply can't fire).
+- **`measure_contradiction_handling`**
+  (`src/steadfast/metrics/robustness.py`). Returns
+  `ContradictionResult` with the three marginal proportions, three
+  Wilson 95% CIs, `n_reps_with_tools` denominator,
+  `per_task: list[ContradictionTaskResult]` for diagnostic drill-down,
+  and `value: Literal["measured"] | None` for the N/A surface.
+  Toolless agents — no rep across any task had a non-empty trajectory —
+  return `ContradictionResult(value=None, reason="agent did not call any
+  tools")` per ADR-0004 §G. Reps with non-empty trajectory but zero
+  corrupted calls (probabilistic — 0.3 per call) still count toward
+  `n_reps_with_tools` and fall through to the `hallucinated` bucket.
+- **`RobustnessDimension.sub_metrics` typing widened** to
+  `dict[str, RobustnessSubMetricResult | ContradictionResult]`.
+  Pydantic 2 smart-union discrimination via the narrower `kind` Literal
+  on each member (`"typo" | "distractor"` vs `"contradiction"`).
+  Round-trips cleanly through `model_dump_json` /
+  `model_validate_json` — verified by
+  `test_measure_robustness_dimension_roundtrips_through_json`.
+- **CLI surface** — `--robustness-types contradiction` is now
+  accepted; `_VALID_ROBUSTNESS_TYPES` derives from the metric layer's
+  `SUPPORTED_KINDS` (no CLI edit needed). Customer-support pilot
+  invocations land on the N/A path (`SimplePromptingAgent` is toolless);
+  a real cross-model contradiction pilot waits on the multi-hop research
+  domain (week 3 or 4) per WEEK_2 §Friday.
+- **HTML report contradiction cell** (`reporting/html.py`). New
+  `_render_contradiction_cell` — three labeled lines (`detect`, `retry`,
+  `halluc`) with per-cell Wilson CIs, plus an `n=…` footer line. The
+  N/A path renders the `reason` text in warn style. Section copy
+  amended to document the marginal-CI semantics.
+- **`prompts/contradiction_corruptions_v1.txt`** — frozen registry of
+  the four programmatic corruption strategies (one strategy per
+  non-comment line, `name: description` format). Loader gates names
+  against the registry per ADR-0006 §C precedent.
+- **`prompts/contradiction_detection_phrases_v1.txt`** — frozen
+  detection / escalation phrase lists in `[detection]` and
+  `[escalation]` sections. Phrases are lowercased on load (the
+  classifier matches lowered answer text).
+- **Tool-using agent fixture**
+  (`tests/fixtures/contradiction_agents.py`). New
+  `EchoToolAgent(behavior, corruption_probability)` — first
+  tool-using agent in the codebase. Calls a single synthetic
+  `lookup_policy` tool, wires the contradiction perturbation into its
+  own tool loop, populates the metadata convention, and exhibits one of
+  the three classifier-relevant behaviors per its `behavior`
+  parameter. The fixture's `_invoke_tool` returns
+  `tuple[str, bool]` so corruption is reported by `should_corrupt`'s
+  authoritative flag rather than inferred from string equality
+  against the ground truth.
+- **Tests**: `tests/test_perturbations_contradiction.py` (35 tests —
+  `should_corrupt` determinism / 0.3-convergence / probability bounds;
+  per-strategy `corrupt_tool_result` behavior including zero-numeric
+  fallthrough and word-boundary matching for `flip_boolean`; loader
+  gates and section-header parsing). `tests/test_metrics_robustness.py`
+  extended with 25 tests — 12 hand-computed classifier rule cases
+  (priority order, refusal short-circuit, pre-corruption-duplicate
+  rejection, structural args equality), 8 metric integration tests
+  against the `EchoToolAgent` fixture (N/A on toolless agent;
+  three-vector convergence per behavior at `p=1.0`; per-task
+  diagnostics; default-phrases load; arun-failure tolerance), and 3
+  `measure_robustness` bundling tests including JSON round-trip.
+  `tests/test_reporting_html.py` extended with 3 contradiction render
+  tests (3-bar marginal cell, N/A cell with reason, mixed-kind row).
+  `tests/test_cli.py` updated — contradiction is now a valid
+  `--robustness-types` value.
+- **HTML report `write_text` now passes `encoding="utf-8"`** so
+  reports with non-ASCII content (model names with accents, task
+  prose) are byte-identical across platforms — Windows would
+  otherwise default to the system code page.
+
 - **Robustness dimension — typo + distractor sub-metrics**
   (`docs/METHODOLOGY.md` §2.1-§2.2 / ADR-0006). New
   `src/steadfast/metrics/robustness.py` exposing

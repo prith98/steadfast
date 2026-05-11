@@ -339,6 +339,165 @@ def test_html_report_robustness_section_skipped_when_no_files(tmp_path: Path) ->
     assert "<h2>Robustness</h2>" not in contents
 
 
+def _contradiction_for(
+    model: str,
+    *,
+    p_detect: float | None = 0.4,
+    p_retry: float | None = 0.3,
+    p_halluc: float | None = 0.3,
+    n_with_tools: int = 30,
+    n_tasks: int = 3,
+    value: str | None = "measured",
+    reason: str | None = None,
+) -> RobustnessDimension:
+    """Build a RobustnessDimension carrying a ContradictionResult sub-metric."""
+    from steadfast.metrics.robustness import (
+        ContradictionResult,
+        ContradictionTaskResult,
+    )
+    from steadfast.stats.wilson import wilson_ci
+
+    has_marginals = (
+        value == "measured"
+        and p_detect is not None
+        and p_retry is not None
+        and p_halluc is not None
+    )
+    if has_marginals:
+        # Type narrowing for mypy: the conjunctive guard above pins all three
+        # to non-None, but the variable annotations here make that explicit.
+        assert p_detect is not None
+        assert p_retry is not None
+        assert p_halluc is not None
+        n_detect = round(p_detect * n_with_tools)
+        n_retry = round(p_retry * n_with_tools)
+        n_halluc = n_with_tools - n_detect - n_retry
+        ci_detect = wilson_ci(n_detect, n_with_tools)
+        ci_retry = wilson_ci(n_retry, n_with_tools)
+        ci_halluc = wilson_ci(n_halluc, n_with_tools)
+    else:
+        ci_detect = ci_retry = ci_halluc = None
+
+    sub = ContradictionResult(
+        n_tasks=n_tasks,
+        n_reps_with_tools=n_with_tools,
+        p_detect=p_detect,
+        p_retry=p_retry,
+        p_halluc=p_halluc,
+        ci_detect=ci_detect,
+        ci_retry=ci_retry,
+        ci_halluc=ci_halluc,
+        per_task=[
+            ContradictionTaskResult(
+                task_id=f"t{i}",
+                n_reps_with_tools=n_with_tools // n_tasks if n_tasks else 0,
+                n_reps_completed=10,
+                labels=[],
+                n_corrupted_calls_per_rep=[],
+                seed=0,
+            )
+            for i in range(n_tasks)
+        ],
+        value="measured" if value == "measured" else None,  # type: ignore[arg-type]
+        reason=reason,
+    )
+
+    return RobustnessDimension(
+        model=model,
+        n_tasks=n_tasks,
+        sub_metrics={"contradiction": sub},
+    )
+
+
+def test_html_report_contradiction_section_renders_three_bars(tmp_path: Path) -> None:
+    """Contradiction sub-metric renders three labeled lines with Wilson CIs."""
+    model = "claude-opus-4-7"
+    model_dir = tmp_path / model.replace("/", "_")
+    model_dir.mkdir(parents=True)
+    dim = _contradiction_for(model, p_detect=0.4, p_retry=0.3, p_halluc=0.3, n_with_tools=30)
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "<h2>Robustness</h2>" in contents
+    # All three label lines should appear in the cell.
+    assert "detect 0.400" in contents
+    assert "retry 0.300" in contents
+    assert "halluc 0.300" in contents
+    # n=30 footer line.
+    assert "n=30" in contents
+    # Section copy mentions the marginal-CI semantics.
+    assert "not jointly bounded" in contents
+
+
+def test_html_report_contradiction_n_a_renders_reason(tmp_path: Path) -> None:
+    """Toolless-agent contradiction surface renders the reason string in warn style."""
+    model = "gpt-5.2"
+    model_dir = tmp_path / model.replace("/", "_")
+    model_dir.mkdir(parents=True)
+    dim = _contradiction_for(
+        model,
+        p_detect=None,
+        p_retry=None,
+        p_halluc=None,
+        n_with_tools=0,
+        value=None,
+        reason="agent did not call any tools",
+    )
+    (model_dir / "robustness.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    assert "agent did not call any tools" in contents
+    assert "warn" in contents  # the warn-styled span carries the reason
+
+
+def test_html_report_robustness_mixed_kinds_render_correctly(tmp_path: Path) -> None:
+    """A model with both delta and contradiction sub-metrics renders both shapes."""
+    model = "claude-opus-4-7"
+    model_dir = tmp_path / model.replace("/", "_")
+    model_dir.mkdir(parents=True)
+
+    delta_dim = _robustness_for(model)
+    contra_dim = _contradiction_for(model, p_detect=0.5, p_retry=0.3, p_halluc=0.2, n_with_tools=20)
+    # Merge the two dimensions' sub_metrics into one RobustnessDimension JSON.
+    combined = RobustnessDimension(
+        model=model,
+        n_tasks=delta_dim.n_tasks,
+        sub_metrics={**delta_dim.sub_metrics, **contra_dim.sub_metrics},
+    )
+    (model_dir / "robustness.json").write_text(combined.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="b",
+        target_models=[model],
+        requested_metrics=frozenset({"robustness"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # Delta cell from typo
+    assert "-0.100" in contents
+    # Contradiction cell.
+    assert "detect 0.500" in contents
+    assert "halluc 0.200" in contents
+
+
 def test_html_report_escapes_user_strings(tmp_path: Path) -> None:
     """Benchmark / model names are inlined; unsafe HTML must be escaped."""
     report_path = tmp_path / "report.html"

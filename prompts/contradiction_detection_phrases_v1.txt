@@ -1,0 +1,46 @@
+# Contradiction detection / escalation phrase list (v0.1, frozen).
+#
+# Used by classify_contradiction_response (ADR-0006 §D) — substring match
+# against the lowercased agent answer text. Phrases here are themselves
+# stored lowercase; the loader lowercases everything on read so the file
+# is editor-friendly.
+#
+# Two sections:
+#   [detection]   — phrases that mark "agent flagged the contradiction."
+#   [escalation]  — phrases that mark "agent escalated / asked for help."
+#
+# The detection rule fires before the retry/escalation rule per ADR-0006 §D
+# decision-rule order (detected wins ties).
+#
+# v0.2 path: a ContradictionRubricJudge LLM judge that handles unanticipated
+# phrasings. Until then, missing-from-list phrasings are an honest
+# false-negative cost documented in METHODOLOGY §"Known limitations."
+#
+# Format: '#' for comments, blank lines OK, '[section]' headers required.
+# One phrase per line; whitespace is trimmed. The order within a section
+# is irrelevant (substring matching is order-independent).
+
+[detection]
+conflicting
+inconsistent
+contradicts
+contradictory
+i cannot reconcile
+the data appears contradictory
+the records disagree
+the records contradict
+appears to be incorrect
+appears wrong
+disagreement in the data
+i need to flag
+
+[escalation]
+escalating to a human
+i need clarification
+passing this to
+referring this to
+needs human review
+i cannot proceed without
+unable to resolve without further
+requires manual review
+flagging for review

@@ -44,6 +44,7 @@ from steadfast.metrics.calibration import (
 )
 from steadfast.metrics.consistency import OutputConsistencyResult
 from steadfast.metrics.robustness import (
+    ContradictionResult,
     RobustnessDimension,
     RobustnessSubMetricResult,
 )
@@ -280,12 +281,21 @@ def _render_robustness_section(
     target_models: list[str],
     output_dir: Path,
 ) -> str:
-    """Per-model robustness table — typo / distractor delta with paired-bootstrap CI.
+    """Per-model robustness table — delta-style cells for typo / distractor,
+    3-bar marginal cells for contradiction.
 
-    Each (model, kind) cell shows the cross-task mean delta and its 95%
-    paired-bootstrap CI (per ADR-0006 §F). The clean / perturbed means
-    appear in a subtle line below for context. Single-task runs surface
-    the point estimate with N/A on the CI per ADR-0004 §G's N/A pattern.
+    Delta cells (typo / distractor): cross-task mean delta and its 95%
+    paired-bootstrap CI per ADR-0006 §F. Clean / perturbed means appear
+    in a subtle line below.
+
+    Contradiction cells: per-cell Wilson 95% CI on (p_detect, p_retry,
+    p_halluc) per ADR-0006 §D. The cell renderer dispatches on
+    ``isinstance(sub, ContradictionResult)`` because the two shapes don't
+    share a delta surface.
+
+    Single-task delta runs surface the point estimate with N/A on the CI
+    per ADR-0004 §G's N/A pattern; toolless contradiction runs surface a
+    populated ``reason`` field instead.
     """
     rows_by_model: dict[str, RobustnessDimension] = {}
     kinds_seen: set[str] = set()
@@ -309,17 +319,25 @@ def _render_robustness_section(
         cells = [f"<td><code>{_h(model)}</code></td>"]
         for kind in sorted_kinds:
             sub = dim.sub_metrics.get(kind)
-            cells.append(f"<td>{_render_robustness_cell(sub)}</td>")
+            if isinstance(sub, ContradictionResult):
+                cells.append(f"<td>{_render_contradiction_cell(sub)}</td>")
+            else:
+                cells.append(f"<td>{_render_robustness_cell(sub)}</td>")
         cells.append(f"<td><span class='subtle'>{dim.n_tasks}</span></td>")
         rows.append("<tr>" + "".join(cells) + "</tr>")
 
     return f"""
 <section class="section">
   <h2>Robustness</h2>
-  <p class="subtle">Cross-task paired-bootstrap CI on the success-rate delta
-  (perturbed minus clean) per ADR-0006 §F. Negative delta = brittle to the
-  perturbation; near-zero = robust. Single-task runs report the point estimate
-  with N/A on the CI (paired bootstrap requires n_tasks &ge; 2).</p>
+  <p class="subtle">Typo / distractor: cross-task paired-bootstrap CI on the
+  success-rate delta (perturbed minus clean) per ADR-0006 §F. Negative delta
+  = brittle to the perturbation; near-zero = robust. Single-task runs report
+  the point estimate with N/A on the CI (paired bootstrap requires n_tasks
+  &ge; 2). Contradiction: per-cell Wilson 95% CI on the 3-way categorical
+  {{detected, retried_or_escalated, hallucinated}} per ADR-0006 §D — the
+  three CIs are not jointly bounded (sum-to-1 holds at the point estimate
+  but not within the intervals). Toolless agents surface an N/A row per
+  ADR-0004 §G.</p>
   <table>{"".join(rows)}</table>
 </section>
 """
@@ -350,6 +368,34 @@ def _render_robustness_cell(sub: RobustnessSubMetricResult | None) -> str:
             f"</span>"
         )
     return f"{point} {ci_html}{means_line}"
+
+
+def _render_contradiction_cell(sub: ContradictionResult) -> str:
+    """Render the 3-bar contradiction cell — one line per label with Wilson CI.
+
+    On the N/A path (toolless agent) the cell shows the ``reason`` text in
+    the warn style so a leaderboard reader can distinguish "no measurement
+    possible" from "measured 0.0".
+    """
+    if sub.value is None or sub.p_detect is None:
+        reason = sub.reason or "no measurement"
+        return f"<span class='warn'>{_h(reason)}</span>"
+    parts: list[str] = []
+    cells: list[tuple[str, float | None, WilsonCI | None]] = [
+        ("detect", sub.p_detect, sub.ci_detect),
+        ("retry", sub.p_retry, sub.ci_retry),
+        ("halluc", sub.p_halluc, sub.ci_halluc),
+    ]
+    for label, p, ci in cells:
+        if p is None or ci is None:
+            parts.append(f"<div>{label} {_na()}</div>")
+            continue
+        parts.append(
+            f"<div>{label} {p:.3f} "
+            f"<span class='ci'>[{ci.ci_lower:.3f}, {ci.ci_upper:.3f}]</span></div>"
+        )
+    parts.append(f"<div class='subtle'>n={sub.n_reps_with_tools}</div>")
+    return "".join(parts)
 
 
 def _render_pass_rate_section(
@@ -494,4 +540,4 @@ def write_html_report(
 </body>
 </html>
 """
-    report_path.write_text(page)
+    report_path.write_text(page, encoding="utf-8")
