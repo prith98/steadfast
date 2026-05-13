@@ -42,3 +42,10 @@ notes/
 *.swp
 *.swo
 .DS_Store
+
+# Internal planning docs (not for public consumption)
+CLAUDE.md
+docs/WEEK_*.md
+
+# Claude Code project-local session / settings
+.claude/
