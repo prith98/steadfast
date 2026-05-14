@@ -52,6 +52,11 @@ from steadfast.metrics.robustness import (
     RobustnessDimension,
     measure_robustness,
 )
+from steadfast.metrics.safety import (
+    SafetyDimension,
+    load_safety_bank,
+    measure_safety,
+)
 from steadfast.models.base import BaseModelClient
 from steadfast.models.openai_client import OpenAIClient
 from steadfast.models.pricing import provider_for_model
@@ -65,13 +70,21 @@ from steadfast.runner import RunResult, run_task
 from steadfast.tracing import benchmark_span, configure_tracing
 from steadfast.tracing.exporters import ExporterKind
 
-# Metric dimensions that ``--metrics`` accepts. Safety lands in week 3;
-# surfacing it as a parser error today (rather than silently warning)
-# matches the v0.1 scope-discipline commitment. Robustness sub-metrics
+# Metric dimensions that ``--metrics`` accepts. Robustness sub-metrics
 # (typo, distractor, contradiction, long_context) are selected via the
 # ``--robustness-types`` flag and validated against
-# ``_SUPPORTED_ROBUSTNESS_KINDS`` from ``metrics.robustness``.
-_VALID_METRICS: Final[frozenset[str]] = frozenset({"consistency", "calibration", "robustness"})
+# ``_SUPPORTED_ROBUSTNESS_KINDS`` from ``metrics.robustness``. Safety is
+# the week-3 addition per ADR-0007 and is special — it requires
+# ``--benchmark safety`` (the only benchmark that resolves to a
+# :class:`SafetyBank` rather than per-task JSON files).
+_VALID_METRICS: Final[frozenset[str]] = frozenset(
+    {"consistency", "calibration", "robustness", "safety"}
+)
+
+# Reserved benchmark name that resolves to the safety case bank instead
+# of the standard ``benchmarks/<name>/*.json`` resolution. ADR-0007 §G's
+# audit gate enforced by :func:`load_safety_bank`.
+_SAFETY_BENCHMARK_NAME: Final[str] = "safety"
 
 # Benchmarks ship under ``benchmarks/`` at the repo root. Resolution rule
 # per ADR-0005 §F: ``customer_support_pilot`` → every
@@ -381,7 +394,53 @@ def bench(
     )
     target_models: list[str] = [model] if model is not None else parse_models(models or "")
 
-    # ---- task resolution ----
+    # ---- safety-vs-everything-else coherence check ----
+    # Safety needs the SafetyBank rather than per-task JSONs, so it
+    # can't be mixed with other --benchmark surfaces in the v0.1 CLI.
+    # Surfacing both directions as parser errors avoids silent misuse:
+    # someone who specifies --metrics safety against customer_support_pilot
+    # would get a working run that didn't actually measure safety, and
+    # someone who specifies --benchmark safety with --metrics calibration
+    # would get a confused mid-run failure when the safety case Tasks
+    # don't carry the expected ground-truth shape.
+    safety_metric_requested = "safety" in requested_metrics
+    safety_benchmark_requested = benchmark == _SAFETY_BENCHMARK_NAME
+    if safety_metric_requested != safety_benchmark_requested:
+        typer.echo(
+            "error: --metrics safety requires --benchmark safety, and "
+            "--benchmark safety requires --metrics safety (no other --metrics "
+            "are supported on the safety bank in v0.1 per ADR-0007).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if safety_metric_requested and len(requested_metrics) > 1:
+        typer.echo(
+            "error: --metrics safety is mutually exclusive with other metric "
+            "dimensions in v0.1 (the safety bank doesn't carry the ground "
+            "truth needed by consistency / calibration / robustness).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if safety_benchmark_requested and task is not None:
+        typer.echo(
+            "error: --benchmark safety cannot be combined with --task.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    output.mkdir(parents=True, exist_ok=True)
+
+    # ---- safety branch — its own dispatch (no run_task, no judge_run_result) ----
+    if safety_benchmark_requested:
+        _run_safety_bench(
+            target_models=target_models,
+            output=output,
+            exporter_kind=exporter_kind,
+            requested_metrics=requested_metrics,
+        )
+        return
+
+    # ---- task resolution (normal benchmarks) ----
     if task is not None:
         if not task.is_file():
             typer.echo(f"error: --task {task} is not a file.", err=True)
@@ -396,8 +455,6 @@ def bench(
     if "calibration" in requested_metrics:
         # Inject the frozen suffix; the agent reads it.
         tasks = _apply_confidence_suffix(tasks, load_confidence_suffix_v1())
-
-    output.mkdir(parents=True, exist_ok=True)
 
     typer.echo(
         f"running benchmark {benchmark_name!r} with {len(tasks)} task(s) on "
@@ -591,6 +648,120 @@ def _write_robustness(model_dir: Path, result: RobustnessDimension) -> None:
     """Write the per-model robustness JSON to ``<model_dir>/robustness.json``."""
     path = model_dir / "robustness.json"
     path.write_text(result.model_dump_json(indent=2))
+
+
+def _write_safety(model_dir: Path, result: SafetyDimension) -> None:
+    """Write the per-model safety JSON to ``<model_dir>/safety.json``."""
+    path = model_dir / "safety.json"
+    path.write_text(result.model_dump_json(indent=2))
+
+
+def _run_safety_bench(
+    *,
+    target_models: list[str],
+    output: Path,
+    exporter_kind: ExporterKind,
+    requested_metrics: frozenset[str],
+) -> None:
+    """Safety dispatch — its own bench loop, separate from the normal flow.
+
+    The safety dimension loads a curated :class:`SafetyBank` rather
+    than per-task JSON files (one bank file holds both trap and benign
+    cases), runs the agent once per case (N=1 per ADR-0007 §E), and
+    invokes :class:`~steadfast.judges.safety.SafetyJudge` directly on
+    each trap response. No ``run_task`` checkpointing and no
+    ``judge_run_result`` dispatch — :func:`measure_safety` owns the
+    loop end-to-end.
+
+    The audit gate (ADR-0007 §G) is enforced by
+    :func:`load_safety_bank`; a ``review_status="draft"`` bank raises
+    ``ValueError`` and the CLI surfaces the error verbatim so the
+    operator sees the audit-pending message rather than a partial run.
+    """
+    bank_path = _BENCHMARK_BASE / _SAFETY_BENCHMARK_NAME / "cases_v1.json"
+    try:
+        bank = load_safety_bank(bank_path)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    except ValueError as exc:
+        # The audit-gate error per ADR-0007 §G — surface the message
+        # verbatim so the operator sees the path forward without
+        # having to dig through the traceback.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    typer.echo(
+        f"running safety bank version={bank.version!r} "
+        f"({len(bank.traps)} trap + {len(bank.benigns)} benign cases) on "
+        f"{len(target_models)} model(s); metrics="
+        f"{sorted(requested_metrics)}...",
+        err=True,
+    )
+
+    # Apply the confidence suffix to every safety case so the agent's
+    # parser populates ``response.refused`` from the REFUSE token on
+    # the ANSWER line. Refusal F1 (METHODOLOGY §4.2) depends on this.
+    confidence_suffix = load_confidence_suffix_v1()
+
+    provider_obj = configure_tracing(exporter=exporter_kind)
+    try:
+        for target_model in target_models:
+            try:
+                provider_name = provider_for_model(target_model)
+            except ValueError as e:
+                typer.echo(f"error: {e}", err=True)
+                raise typer.Exit(2) from e
+            target_client = _build_client(provider_name)
+            sf_agent = SimplePromptingAgent(client=target_client, model=target_model)
+            safety_judge_client = _build_rubric_client(provider_name, target_client)
+
+            model_dir = output / _slug(target_model)
+            model_dir.mkdir(parents=True, exist_ok=True)
+
+            with benchmark_span(
+                name=f"{_SAFETY_BENCHMARK_NAME}/{target_model}",
+                package_version=__version__,
+            ):
+                result = asyncio.run(
+                    measure_safety(
+                        model=target_model,
+                        bank=bank,
+                        agent=sf_agent,
+                        safety_judge_client=safety_judge_client,
+                        confidence_suffix=confidence_suffix,
+                    )
+                )
+            _write_safety(model_dir, result)
+            _summarize_safety_run(target_model, result)
+    finally:
+        provider_obj.force_flush()
+        provider_obj.shutdown()
+
+    report_path = output / "report.html"
+    write_html_report(
+        output_dir=output,
+        benchmark_name=_SAFETY_BENCHMARK_NAME,
+        target_models=target_models,
+        requested_metrics=requested_metrics,
+        report_path=report_path,
+    )
+    typer.echo(f"wrote {report_path}", err=True)
+
+
+def _summarize_safety_run(model: str, result: SafetyDimension) -> None:
+    """One-line per-model summary for the safety dispatch."""
+    cat_rate = f"{result.catastrophic.rate:.3f}" if result.catastrophic.rate is not None else "N/A"
+    f1 = f"{result.refusal.f1:.3f}" if result.refusal.f1 is not None else "N/A"
+    typer.echo(
+        f"model={model} catastrophic_rate={cat_rate} "
+        f"({result.catastrophic.n_harmful}/{result.catastrophic.n_traps_judged}) "
+        f"refusal_f1={f1} "
+        f"(tp={result.refusal.tp} fp={result.refusal.fp} "
+        f"fn={result.refusal.fn} tn={result.refusal.tn}) "
+        f"agent_failures={result.n_agent_failures} "
+        f"judge_failures={result.n_judge_failures}"
+    )
 
 
 def _load_distractor_banks_for(tasks: Iterable[Task]) -> dict[str, DistractorBank]:

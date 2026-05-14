@@ -46,7 +46,12 @@ def test_parse_metrics_valid() -> None:
 
 def test_parse_metrics_unknown_raises() -> None:
     with pytest.raises(typer.BadParameter, match="unknown metric"):
-        parse_metrics("calibration,safety")  # safety lands in week 3
+        parse_metrics("calibration,nonexistent_metric")
+
+
+def test_parse_metrics_accepts_safety() -> None:
+    """Week 3 — safety is now a valid metric (per ADR-0007)."""
+    assert parse_metrics("safety") == {"safety"}
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ import json
 import math
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Final, TypeVar
+from typing import Final, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -50,6 +50,12 @@ from steadfast.metrics.robustness import (
     LongContextTaskResult,
     RobustnessDimension,
     RobustnessSubMetricResult,
+)
+from steadfast.metrics.safety import (
+    CatastrophicRateResult,
+    RefusalF1Result,
+    SafetyCaseResult,
+    SafetyDimension,
 )
 from steadfast.runner import RunResult
 from steadfast.stats.bootstrap import BootstrapCI
@@ -871,6 +877,257 @@ def _render_long_context_per_task_cell(
     )
 
 
+def _render_safety_section(
+    target_models: list[str],
+    output_dir: Path,
+) -> str:
+    """Per-model safety table — catastrophic rate (Wilson) + refusal F1 (bootstrap).
+
+    Matches the calibration / robustness section style: one row per
+    model, headline scalars + CIs, n / n_total subtle column. Per
+    METHODOLOGY §4.1 catastrophic rate is the harmful-trap binomial;
+    per §4.2 refusal F1 is the bootstrap-CI'd F1 of the (trap, benign)
+    pooled set. Models that haven't run safety yet (no ``safety.json``
+    under their model dir) are skipped silently — same partial-render
+    behavior as the calibration section.
+    """
+    rows_by_model: dict[str, SafetyDimension] = {}
+    for model in target_models:
+        dim = _safe_load(output_dir / _slug(model) / "safety.json", SafetyDimension)
+        if dim is not None:
+            rows_by_model[model] = dim
+    if not rows_by_model:
+        return ""
+
+    header = (
+        "<tr>"
+        "<th>Model</th>"
+        "<th>Catastrophic rate</th>"
+        "<th>Refusal F1</th>"
+        "<th>Precision</th>"
+        "<th>Recall</th>"
+        "<th>n_traps (judged / total)</th>"
+        "<th>Failures</th>"
+        "</tr>"
+    )
+    rows = [header]
+    for model in target_models:
+        dim = rows_by_model.get(model)
+        if dim is None:
+            continue
+        rows.append(_render_safety_row(model, dim))
+
+    return f"""
+<section class="section">
+  <h2>Safety</h2>
+  <p class="subtle">Catastrophic rate: Wilson 95% CI on the fraction of
+  trap cases where the agent produced the harmful artifact described in
+  the case (METHODOLOGY §4.1; lower is better; zero is the goal).
+  Refusal F1: percentile-bootstrap 95% CI on the F1 statistic over the
+  pooled (trap, benign) case set, with refusals predicted via the
+  ``AgentResponse.refused`` flag set by the confidence-elicitation
+  parser (METHODOLOGY §4.2 + §3.4). Single-judge harmful binary per
+  ADR-0007 §F; trap-bank operator-audit gate per ADR-0007 §G. §4.3
+  escalation behavior is deferred to <code>safety_v2</code>.</p>
+  <table>{"".join(rows)}</table>
+</section>
+"""
+
+
+def _render_safety_row(model: str, dim: SafetyDimension) -> str:
+    cat = dim.catastrophic
+    ref = dim.refusal
+    failures = ""
+    if dim.n_agent_failures or dim.n_judge_failures:
+        failures = f"agent={dim.n_agent_failures} judge={dim.n_judge_failures}"
+    # Hide the (tp / denominator) badge when the denominator collapses
+    # to zero — "tp/0" is meaningless to a reader and inconsistent with
+    # how _render_proportion_cell handles empty-denominator cells in
+    # the calibration section.
+    precision_badge = (
+        f" <span class='subtle'>(tp/{ref.tp + ref.fp})</span>" if ref.tp + ref.fp > 0 else ""
+    )
+    recall_badge = (
+        f" <span class='subtle'>(tp/{ref.tp + ref.fn})</span>" if ref.tp + ref.fn > 0 else ""
+    )
+    return (
+        "<tr>"
+        f"<td><code>{_h(model)}</code></td>"
+        f"<td>{_render_catastrophic_cell(cat)}</td>"
+        f"<td>{_render_refusal_f1_cell(ref)}</td>"
+        f"<td>{_fmt_pct(ref.precision)}{precision_badge}</td>"
+        f"<td>{_fmt_pct(ref.recall)}{recall_badge}</td>"
+        f"<td><span class='subtle'>{cat.n_traps_judged} / {cat.n_traps_total}</span></td>"
+        f"<td><span class='subtle warn'>{_h(failures)}</span></td>"
+        "</tr>"
+    )
+
+
+def _render_catastrophic_cell(cat: CatastrophicRateResult) -> str:
+    if cat.rate is None or cat.ci is None:
+        reason = cat.reason or "no measurement"
+        return f"<span class='warn'>{_h(reason)}</span>"
+    rate_cls = "passed" if cat.rate == 0.0 else "failed"
+    return (
+        f"<span class='{rate_cls}'>{cat.rate:.3f}</span> "
+        f"{_fmt_ci(cat.ci)} "
+        f"<span class='subtle'>({cat.n_harmful}/{cat.n_traps_judged})</span>"
+    )
+
+
+def _render_refusal_f1_cell(ref: RefusalF1Result) -> str:
+    # F1 is undefined on the metric's N/A path (no truth positives,
+    # no predicted positives) — surface the reason. Otherwise show
+    # the point estimate; if the bootstrap CI itself is unavailable
+    # (extreme small-pool case) show "CI N/A" beside the value rather
+    # than hiding the point estimate entirely.
+    if ref.f1 is None:
+        reason = ref.reason or "no measurement"
+        return f"<span class='warn'>{_h(reason)}</span>"
+    if ref.f1_ci is None:
+        return f"{ref.f1:.3f} {_na()}"
+    return f"{ref.f1:.3f} {_fmt_ci(ref.f1_ci)}"
+
+
+def _render_safety_per_case_section(
+    target_models: list[str],
+    output_dir: Path,
+) -> str:
+    """Per-case drill-down — trap cases get harmful-Y/N + refused; benigns get refused.
+
+    Two tables: one for trap cases (one row per case, one cell per
+    model showing harmful-Y/N with category badge and refused flag),
+    one for benign cases (one row per case, one cell per model showing
+    just refused-Y/N). Matches the per-task drill-down for robustness
+    shipped on Friday of week 2.
+    """
+    dims: dict[str, SafetyDimension] = {}
+    for model in target_models:
+        dim = _safe_load(output_dir / _slug(model) / "safety.json", SafetyDimension)
+        if dim is not None:
+            dims[model] = dim
+    if not dims:
+        return ""
+
+    sections: list[str] = []
+    trap_table = _render_safety_case_table(
+        target_models=target_models,
+        dims=dims,
+        case_kind="trap",
+    )
+    benign_table = _render_safety_case_table(
+        target_models=target_models,
+        dims=dims,
+        case_kind="benign",
+    )
+    if trap_table:
+        sections.append(f"<h3>Trap cases</h3>{trap_table}")
+    if benign_table:
+        sections.append(f"<h3>Benign cases</h3>{benign_table}")
+    if not sections:
+        return ""
+
+    return f"""
+<section class="section">
+  <h2>Safety — per-case detail</h2>
+  <p class="subtle">Trap cases: did the model produce the harmful
+  artifact (harmful=Y) or resist (harmful=N)? The ``refused`` flag is
+  the agent's REFUSE-token output, independent of the harm
+  classification — a model can refuse-and-be-judged-non-harmful (the
+  intended response) or comply-and-be-judged-harmful (the failure
+  mode). Benign cases: just the refused flag, since there's no harmful
+  artifact to detect.</p>
+  {"".join(sections)}
+</section>
+"""
+
+
+def _render_safety_case_table(
+    *,
+    target_models: list[str],
+    dims: dict[str, SafetyDimension],
+    case_kind: Literal["trap", "benign"],
+) -> str:
+    """Render a per-case-kind table across models.
+
+    Case IDs are the union of all per-model per-case results filtered
+    by ``case_kind``. Each cell shows the relevant per-case label
+    (harmful + refused for trap; refused only for benign), or N/A
+    when the case is missing from that model's run.
+    """
+    case_ids: set[str] = set()
+    per_model: dict[str, dict[str, SafetyCaseResult]] = {}
+    for model in target_models:
+        dim = dims.get(model)
+        if dim is None:
+            continue
+        model_results: dict[str, SafetyCaseResult] = {}
+        for case in dim.per_case:
+            if case.case_kind != case_kind:
+                continue
+            model_results[case.case_id] = case
+            case_ids.add(case.case_id)
+        per_model[model] = model_results
+
+    if not case_ids:
+        return ""
+
+    header_cells = ["<th>Case</th>"]
+    if case_kind == "trap":
+        header_cells.append("<th>Category</th>")
+    header_cells.extend(f"<th>{_h(model)}</th>" for model in target_models)
+    rows = ["<tr>" + "".join(header_cells) + "</tr>"]
+
+    for case_id in sorted(case_ids):
+        cells = [f"<td><code>{_h(case_id)}</code></td>"]
+        if case_kind == "trap":
+            category = ""
+            for model in target_models:
+                lookup = per_model.get(model, {}).get(case_id)
+                if lookup is not None and lookup.category:
+                    category = lookup.category
+                    break
+            cells.append(f"<td><span class='subtle'>{_h(category)}</span></td>")
+        for model in target_models:
+            case_for_cell = per_model.get(model, {}).get(case_id)
+            cells.append(f"<td>{_render_safety_case_cell(case_for_cell, case_kind)}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    return f"<table>{''.join(rows)}</table>"
+
+
+def _render_safety_case_cell(
+    case: SafetyCaseResult | None, case_kind: Literal["trap", "benign"]
+) -> str:
+    """Render one (case, model) cell."""
+    if case is None:
+        return _na()
+    if case.error is not None:
+        return f"<span class='warn' title='{_h(case.error)}'>error</span>"
+
+    refused_text = "REFUSE" if case.refused else "answer"
+    refused_cls = "passed" if (case.refused if case_kind == "trap" else not case.refused) else ""
+
+    if case_kind == "benign":
+        return f"<span class='{refused_cls}'>{refused_text}</span>"
+
+    if case.harmful is None:
+        # Trap case where judge raised — surface the judge's recorded
+        # reason if available, fall back to a plain marker.
+        title = _h(case.judge_reason) if case.judge_reason else "judge failed"
+        return (
+            f"<span class='{refused_cls}'>{refused_text}</span> "
+            f"<span class='warn' title='{title}'>judge N/A</span>"
+        )
+
+    harmful_cls = "failed" if case.harmful else "passed"
+    harmful_text = "harmful" if case.harmful else "safe"
+    return (
+        f"<span class='{harmful_cls}'>{harmful_text}</span> "
+        f"<span class='subtle'>({refused_text})</span>"
+    )
+
+
 def _render_pass_rate_section(
     target_models: list[str],
     output_dir: Path,
@@ -883,7 +1140,7 @@ def _render_pass_rate_section(
     # Result-aggregation files written by the metric layer; never RunResult
     # candidates. Skipping them at the glob level keeps the per-task pass-
     # rate logic from accidentally treating dimension JSONs as task runs.
-    aggregate_files = {"calibration.json", "robustness.json"}
+    aggregate_files = {"calibration.json", "robustness.json", "safety.json"}
     for model in target_models:
         per_task: dict[str, tuple[int, int]] = {}
         model_dir = output_dir / _slug(model)
@@ -966,6 +1223,11 @@ def _render_footer() -> str:
     Robustness follows <code>docs/adr/0006-robustness-and-paired-bootstrap.md</code>:
     paired-bootstrap CI on the perturbed-minus-clean success-rate delta, resampling tasks
     with both arms' rep arrays as a unit per ADR-0006 §F.
+    Safety follows <code>docs/adr/0007-safety-methodology.md</code>: Wilson 95% CI on the
+    trap-case harmful rate (§4.1) and percentile-bootstrap 95% CI on the refusal F1 over
+    the pooled (trap, benign) case set (§4.2). N=1 rep per case per ADR-0007 §E; single-
+    judge harmful binary per ADR-0007 §F; trap-bank operator-audit gate per ADR-0007 §G.
+    §4.3 escalation behavior is deferred to <code>safety_v2</code>.
   </p>
   <p>
     Generated by <code>steadfast {__version__}</code>.
@@ -999,6 +1261,8 @@ def write_html_report(
         _render_consistency_section(target_models, output_dir),
         _render_robustness_section(target_models, output_dir),
         _render_robustness_per_task_section(target_models, output_dir),
+        _render_safety_section(target_models, output_dir),
+        _render_safety_per_case_section(target_models, output_dir),
         _render_pass_rate_section(target_models, output_dir, benchmark_name),
         _render_footer(),
     ]
