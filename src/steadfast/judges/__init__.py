@@ -27,6 +27,12 @@ from steadfast.judges.rubric import (
     RUBRIC_PROMPT_VERSION,
     RubricJudge,
 )
+from steadfast.judges.safety import (
+    DEFAULT_SAFETY_JUDGE_MODEL,
+    SAFETY_PROMPT_VERSION,
+    SafetyJudge,
+    SafetyTaskContractError,
+)
 from steadfast.models.base import BaseModelClient
 from steadfast.tracing import record_verdict, score_span
 
@@ -47,12 +53,20 @@ def build_default_judge(
     *,
     rubric_client: BaseModelClient | None = None,
     rubric_model: str = DEFAULT_RUBRIC_MODEL,
+    safety_model: str = DEFAULT_SAFETY_JUDGE_MODEL,
 ) -> Judge:
     """Return the judge appropriate to ``task.judge``.
 
-    For ``task.judge == "rubric"`` callers must provide ``rubric_client``
-    (typically the OpenAI client per ADR-0001). For ``"exact_match"``
-    no client is needed.
+    For ``task.judge == "rubric"`` or ``"safety_harmful"`` callers must
+    provide ``rubric_client`` (typically the OpenAI client per
+    ADR-0001). For ``"exact_match"`` no client is needed.
+
+    ``rubric_model`` and ``safety_model`` are kept as separate
+    parameters even though both default to ``gpt-5.2`` in v0.1 — the
+    rubric and safety judges are independent prompt surfaces and may
+    diverge in v0.2 (per ADR-0007 §H ensemble path). Letting callers
+    override them independently keeps the dispatch defensible against
+    that divergence.
     """
     if task.judge == "exact_match":
         return ExactMatchJudge()
@@ -63,6 +77,13 @@ def build_default_judge(
                 "per ADR-0001); pass rubric_client= explicitly."
             )
         return RubricJudge(client=rubric_client, model=rubric_model)
+    if task.judge == "safety_harmful":
+        if rubric_client is None:
+            raise ValueError(
+                "SafetyJudge requires a BaseModelClient (typically OpenAIClient "
+                "per ADR-0001); pass rubric_client= explicitly."
+            )
+        return SafetyJudge(client=rubric_client, model=safety_model)
     raise ValueError(f"unknown task.judge value: {task.judge!r}")
 
 
@@ -121,12 +142,16 @@ async def judge_run_result(
 
 __all__ = [
     "DEFAULT_RUBRIC_MODEL",
+    "DEFAULT_SAFETY_JUDGE_MODEL",
     "RUBRIC_PROMPT_VERSION",
+    "SAFETY_PROMPT_VERSION",
     "ExactMatchJudge",
     "Judge",
     "JudgeError",
     "JudgeParseError",
     "RubricJudge",
+    "SafetyJudge",
+    "SafetyTaskContractError",
     "Verdict",
     "build_default_judge",
     "canonicalize",

@@ -70,7 +70,12 @@ class Task(BaseModel):
     domain: str
     input: str
     ground_truth: GroundTruth | None = None
-    judge: Literal["exact_match", "rubric"] = "rubric"
+    # ``safety_harmful`` is the trap-case judge per ADR-0007 §F; the
+    # ``ground_truth.value`` carries the harmful-artifact description
+    # (kind="rubric"). Benign safety cases set ``judge="exact_match"``
+    # with ``ground_truth=None`` and are never routed through any
+    # judge — refusal F1 only consumes ``AgentResponse.refused``.
+    judge: Literal["exact_match", "rubric", "safety_harmful"] = "rubric"
     confidence_suffix: str | None = None
     output_schema: str | None = None
     difficulty: Literal["normal", "hard"] = "normal"
