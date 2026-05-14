@@ -737,3 +737,136 @@ async def test_measure_safety_writes_per_case_rows(monkeypatch: pytest.MonkeyPat
     assert all(r.harmful is None for r in benign_rows)
     # Every row has the answer preview.
     assert all(r.answer_preview for r in result.per_case)
+
+
+# ---------------------------------------------------------------------------
+# Cost aggregation (v0.1.x clarification fix, ADR-0008 §G item 1)
+# ---------------------------------------------------------------------------
+
+
+class _CostedAgent(Agent):
+    """Agent that returns a configured per-task cost on every response."""
+
+    def __init__(self, *, cost: Decimal | None) -> None:
+        self._cost = cost
+
+    async def arun(self, task: Task) -> AgentResponse:
+        return AgentResponse(
+            answer="ok",
+            refused=False,
+            raw_output="ok",
+            cost_usd=self._cost,
+        )
+
+
+@pytest.mark.asyncio
+async def test_measure_safety_aggregates_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-case cost flows from AgentResponse through SafetyCaseResult into the dimension total."""
+    bank = load_safety_bank(FIXTURE_BANK_PATH)
+    agent = _CostedAgent(cost=Decimal("0.012"))
+    _patch_safety_judge(monkeypatch, _AlwaysSafeJudge())
+
+    result = await measure_safety(
+        model="test-model",
+        bank=bank,
+        agent=agent,
+        safety_judge_client=_FakeClient(),  # type: ignore[arg-type]
+        confidence_suffix=None,
+        n_resamples=200,
+    )
+    # 6 cases * 0.012 = 0.072
+    assert result.total_cost_usd == Decimal("0.072")
+    # Every per-case row carries the cost.
+    assert all(c.cost_usd == Decimal("0.012") for c in result.per_case)
+
+
+@pytest.mark.asyncio
+async def test_measure_safety_cost_none_when_unpopulated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agents that don't expose cost_usd surface as total_cost_usd=None, not 0."""
+    bank = load_safety_bank(FIXTURE_BANK_PATH)
+    agent = _CostedAgent(cost=None)
+    _patch_safety_judge(monkeypatch, _AlwaysSafeJudge())
+
+    result = await measure_safety(
+        model="test-model",
+        bank=bank,
+        agent=agent,
+        safety_judge_client=_FakeClient(),  # type: ignore[arg-type]
+        confidence_suffix=None,
+        n_resamples=200,
+    )
+    assert result.total_cost_usd is None
+    assert all(c.cost_usd is None for c in result.per_case)
+
+
+def test_safety_dimension_total_cost_excludes_failed_cases() -> None:
+    """Failed-agent cases have cost_usd=None and don't affect the dimension sum."""
+    per_case = [
+        SafetyCaseResult(
+            case_id="t1",
+            case_kind="trap",
+            category="data_destruction",
+            refused=False,
+            harmful=True,
+            answer_preview="…",
+            cost_usd=Decimal("0.05"),
+        ),
+        SafetyCaseResult(
+            case_id="t2",
+            case_kind="trap",
+            category="data_destruction",
+            refused=None,
+            harmful=None,
+            answer_preview="",
+            error="RuntimeError: boom",
+            cost_usd=None,
+        ),
+        SafetyCaseResult(
+            case_id="b1",
+            case_kind="benign",
+            category=None,
+            refused=False,
+            harmful=None,
+            answer_preview="ok",
+            cost_usd=Decimal("0.02"),
+        ),
+    ]
+    from steadfast.metrics.safety import (
+        CatastrophicRateResult,
+        RefusalF1Result,
+        SafetyDimension,
+    )
+
+    dim = SafetyDimension(
+        model="m",
+        bank_version="v1",
+        n_traps=2,
+        n_benigns=1,
+        catastrophic=CatastrophicRateResult(
+            n_traps_total=2,
+            n_traps_judged=1,
+            n_harmful=1,
+            rate=1.0,
+            ci=None,
+        ),
+        refusal=RefusalF1Result(
+            n_total=2,
+            n_traps=1,
+            n_benigns=1,
+            tp=0,
+            fp=0,
+            fn=1,
+            tn=1,
+            precision=None,
+            recall=0.0,
+            f1=0.0,
+            f1_ci=None,
+            n_resamples=None,
+            confidence_level=None,
+            method=None,
+        ),
+        per_case=per_case,
+    )
+    assert dim.total_cost_usd == Decimal("0.07")

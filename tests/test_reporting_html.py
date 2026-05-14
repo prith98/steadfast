@@ -850,3 +850,185 @@ def test_html_report_long_context_format_tokens_branches() -> None:
     assert _format_tokens(128_000) == "128k"
     assert _format_tokens(2_000_000) == "2M"
     assert _format_tokens(1_500_000) == "1.5M"
+
+
+def _build_safety_dim(model: str, traps: list[tuple[str, str, bool]]) -> object:
+    """Build a SafetyDimension from a list of (case_id, category, harmful) trap triples."""
+    from steadfast.metrics.safety import (
+        CatastrophicRateResult,
+        RefusalF1Result,
+        SafetyCaseResult,
+        SafetyDimension,
+    )
+
+    per_case = []
+    n_harmful = 0
+    for case_id, category, harmful in traps:
+        per_case.append(
+            SafetyCaseResult(
+                case_id=case_id,
+                case_kind="trap",
+                category=category,
+                refused=False,
+                harmful=harmful,
+                answer_preview="…",
+            )
+        )
+        if harmful:
+            n_harmful += 1
+    return SafetyDimension(
+        model=model,
+        bank_version="v1",
+        n_traps=len(traps),
+        n_benigns=0,
+        catastrophic=CatastrophicRateResult(
+            n_traps_total=len(traps),
+            n_traps_judged=len(traps),
+            n_harmful=n_harmful,
+            rate=n_harmful / len(traps) if traps else None,
+            ci=None,
+        ),
+        refusal=RefusalF1Result(
+            n_total=len(traps),
+            n_traps=len(traps),
+            n_benigns=0,
+            tp=0,
+            fp=0,
+            fn=len(traps),
+            tn=0,
+            precision=None,
+            recall=0.0,
+            f1=0.0,
+            f1_ci=None,
+            n_resamples=None,
+            confidence_level=None,
+            method=None,
+        ),
+        per_case=per_case,
+    )
+
+
+def test_html_report_safety_per_category_breakdown(tmp_path: Path) -> None:
+    """v0.1.x clarification fix per ADR-0008 §G item 2: per-harm-category sub-table."""
+    model = "test-model"
+    dim = _build_safety_dim(
+        model,
+        traps=[
+            # 2/2 harmful on data_destruction
+            ("td1", "data_destruction", True),
+            ("td2", "data_destruction", True),
+            # 0/2 harmful on illegal_advice
+            ("ti1", "illegal_advice", False),
+            ("ti2", "illegal_advice", False),
+            # 1/2 harmful on pii_exfiltration
+            ("tp1", "pii_exfiltration", True),
+            ("tp2", "pii_exfiltration", False),
+            # 0/2 harmful on social_engineering
+            ("ts1", "social_engineering", False),
+            ("ts2", "social_engineering", False),
+        ],
+    )
+    slug = model.replace("/", "_")
+    (tmp_path / slug).mkdir()
+    (tmp_path / slug / "safety.json").write_text(dim.model_dump_json(indent=2))
+
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="safety",
+        target_models=[model],
+        requested_metrics=frozenset({"safety"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # Per-category sub-table header
+    assert "Catastrophic rate by harm category" in contents
+    # All four categories surface as rows
+    for cat in ("data_destruction", "illegal_advice", "pii_exfiltration", "social_engineering"):
+        assert cat in contents
+    # data_destruction at 2/2 → 1.000 cell
+    assert "1.000" in contents
+    # illegal_advice and social_engineering at 0/2 → 0.000 cell
+    assert "0.000" in contents
+    # pii_exfiltration at 1/2 → 0.500 cell
+    assert "0.500" in contents
+
+
+def test_html_report_safety_per_category_handles_missing_judge(tmp_path: Path) -> None:
+    """A category where every trap had a judge failure → N/A cell, not crash."""
+    from steadfast.metrics.safety import (
+        CatastrophicRateResult,
+        RefusalF1Result,
+        SafetyCaseResult,
+        SafetyDimension,
+    )
+
+    per_case = [
+        # data_destruction: both judge failed → N/A
+        SafetyCaseResult(
+            case_id="td1",
+            case_kind="trap",
+            category="data_destruction",
+            refused=False,
+            harmful=None,
+            answer_preview="…",
+            judge_reason="judge failed",
+        ),
+        SafetyCaseResult(
+            case_id="td2",
+            case_kind="trap",
+            category="data_destruction",
+            refused=False,
+            harmful=None,
+            answer_preview="…",
+            judge_reason="judge failed",
+        ),
+    ]
+    dim = SafetyDimension(
+        model="m",
+        bank_version="v1",
+        n_traps=2,
+        n_benigns=0,
+        n_judge_failures=2,
+        catastrophic=CatastrophicRateResult(
+            n_traps_total=2,
+            n_traps_judged=0,
+            n_harmful=0,
+            rate=None,
+            ci=None,
+            reason="no judged traps",
+        ),
+        refusal=RefusalF1Result(
+            n_total=2,
+            n_traps=2,
+            n_benigns=0,
+            tp=0,
+            fp=0,
+            fn=2,
+            tn=0,
+            precision=None,
+            recall=0.0,
+            f1=0.0,
+            f1_ci=None,
+            n_resamples=None,
+            confidence_level=None,
+            method=None,
+        ),
+        per_case=per_case,
+    )
+    (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "safety.json").write_text(dim.model_dump_json(indent=2))
+    report_path = tmp_path / "report.html"
+    write_html_report(
+        output_dir=tmp_path,
+        benchmark_name="safety",
+        target_models=["m"],
+        requested_metrics=frozenset({"safety"}),
+        report_path=report_path,
+    )
+    contents = report_path.read_text()
+    # Per-category table renders despite zero judged traps everywhere.
+    assert "Catastrophic rate by harm category" in contents
+    assert "N/A (0/2)" in contents
+    # Other categories with zero traps at all show N/A (0/0).
+    assert "N/A (0/0)" in contents

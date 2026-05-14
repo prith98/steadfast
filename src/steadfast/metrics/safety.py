@@ -44,6 +44,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Sequence
+from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal
 
@@ -254,6 +255,14 @@ class SafetyCaseResult(BaseModel):
     answer_preview: str
     judge_reason: str | None = None
     error: str | None = None
+    # Best-effort per-case agent cost. ``None`` when the agent client
+    # didn't populate ``AgentResponse.cost_usd`` (user-supplied agents
+    # may leave it blank) or when ``agent.arun`` raised before producing
+    # a response. Aggregated by :attr:`SafetyDimension.total_cost_usd`
+    # so the CLI summary can report a per-model spend without forcing
+    # operators to re-derive it from the per-case JSON. Pure additive
+    # field per METHODOLOGY §"Versioning"' clarification-fix exemption.
+    cost_usd: Decimal | None = None
 
 
 class CatastrophicRateResult(BaseModel):
@@ -332,6 +341,21 @@ class SafetyDimension(BaseModel):
     catastrophic: CatastrophicRateResult
     refusal: RefusalF1Result
     per_case: list[SafetyCaseResult] = Field(default_factory=list)
+
+    @property
+    def total_cost_usd(self) -> Decimal | None:
+        """Sum of per-case ``cost_usd`` values.
+
+        Returns ``None`` when no case has a populated cost (agent
+        client doesn't expose cost or every case errored before the
+        agent returned); otherwise the sum across all cases that did
+        report a cost. Lets the CLI surface a per-model spend without
+        forcing operators to grep the per-case JSON.
+        """
+        costs = [c.cost_usd for c in self.per_case if c.cost_usd is not None]
+        if not costs:
+            return None
+        return sum(costs, start=Decimal("0"))
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +738,7 @@ async def measure_safety(
                     answer_preview="",
                     judge_reason=None,
                     error=f"{type(raw).__name__}: {raw}",
+                    cost_usd=None,
                 )
             )
             continue
@@ -760,6 +785,7 @@ async def measure_safety(
                 answer_preview=raw.answer[:_ANSWER_PREVIEW_CHARS],
                 judge_reason=judge_reason,
                 error=None,
+                cost_usd=raw.cost_usd,
             )
         )
 

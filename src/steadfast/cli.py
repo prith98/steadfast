@@ -28,9 +28,10 @@ from collections import Counter
 from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 import typer
+from pydantic import BaseModel, ConfigDict, Field
 
 from steadfast import __version__
 from steadfast.agent import Agent, SimplePromptingAgent, Task
@@ -174,13 +175,47 @@ def _build_rubric_client(target_provider: str, target_client: BaseModelClient) -
     return _build_openai_client()
 
 
+class BenchmarkAuditManifest(BaseModel):
+    """Per-domain audit manifest (ADR-0008 §F).
+
+    Each benchmark domain may ship a ``_review.json`` file at its root
+    listing which tasks the operator has audited. The CLI's loader
+    filters tasks to those in ``reviewed_tasks``; drafted tasks are
+    excluded with a warning. Same fail-loud philosophy as the safety
+    bank's per-case audit gate (ADR-0007 §G), scoped to a directory
+    rather than a single file so audits can happen in batches.
+
+    The ``draft_tasks`` field is operator-facing audit-trail metadata;
+    the loader does NOT cross-check it against the filesystem (a task
+    on disk that's in neither list is treated as drafted by virtue
+    of not being in ``reviewed_tasks``). Cross-check tooling can ride
+    in alongside the optional ``review_status`` field if it becomes
+    load-bearing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    version: str = "v1"
+    review_status: Literal["draft", "partial", "complete"] = "draft"
+    reviewed_tasks: list[str] = Field(default_factory=list)
+    draft_tasks: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
 def resolve_benchmark(name: str) -> list[Path]:
     """Resolve a benchmark name to a sorted list of task JSON paths.
 
     ``customer_support_pilot`` → ``benchmarks/customer_support/pilot_*.json``.
     Other ``<domain>_<suffix>`` names are reserved; v0.1 only ships the
     pilot. Bare domain names (``customer_support``) resolve to every
-    ``*.json`` task in the domain directory.
+    ``*.json`` task in the domain directory and apply the
+    operator-audit gate per ADR-0008 §F: a ``_review.json`` manifest
+    in the same directory filters the returned paths to only those
+    whose task ID is in ``reviewed_tasks``. Files starting with ``_``
+    are excluded from the glob unconditionally — those are convention-
+    reserved for manifest/metadata files (mirrors the
+    ``benchmarks/safety/cases_v1.json``-vs-``benchmarks/safety/README.md``
+    distinction, plus the new manifest).
 
     Raises :class:`typer.BadParameter` if no tasks match — silent empty
     resolution would be worse than a loud failure.
@@ -192,10 +227,16 @@ def resolve_benchmark(name: str) -> list[Path]:
         )
 
     pilot_suffix = "_pilot"
+    apply_audit_gate = True
     if name.endswith(pilot_suffix):
         domain = name[: -len(pilot_suffix)]
         domain_dir = _BENCHMARK_BASE / domain
         glob = "pilot_*.json"
+        # The pilot slug pre-dates the ADR-0008 §F manifest; pilot tasks
+        # were operator-vouched during weeks 1-3. Skip the gate so the
+        # slug stays backward-compatible. The bare-domain slug is the
+        # gated reading.
+        apply_audit_gate = False
     else:
         domain_dir = _BENCHMARK_BASE / name
         glob = "*.json"
@@ -204,12 +245,123 @@ def resolve_benchmark(name: str) -> list[Path]:
         raise typer.BadParameter(
             f"benchmark {name!r} did not resolve to a directory under {_BENCHMARK_BASE}"
         )
-    paths = sorted(domain_dir.glob(glob))
+    # Exclude convention-reserved files from the task glob:
+    # * ``_*.json`` — manifest/metadata files (``_review.json`` per
+    #   ADR-0008 §F).
+    # * ``*.draft.json`` — draft-state bank files (e.g.,
+    #   ``distractors_v1.draft.json`` per ADR-0006 §C); pre-existing
+    #   convention.
+    # * ``distractors_v*.json``, ``cases_v*.json`` — frozen bank
+    #   artifacts that share the task directory but use a different
+    #   schema. Glob-exclude rather than schema-sniff so the audit
+    #   gate's :func:`_read_task_id` stays a strict read.
+    def _is_task_file(p: Path) -> bool:
+        if p.name.startswith("_"):
+            return False
+        if p.name.endswith(".draft.json"):
+            return False
+        return not (p.name.startswith("distractors_v") or p.name.startswith("cases_v"))
+
+    paths = sorted(p for p in domain_dir.glob(glob) if _is_task_file(p))
     if not paths:
         raise typer.BadParameter(
             f"benchmark {name!r} resolved to {domain_dir} but no task files matched {glob!r}"
         )
+
+    if apply_audit_gate:
+        paths = _apply_audit_gate(paths, domain_dir, benchmark_name=name)
     return paths
+
+
+def _apply_audit_gate(
+    paths: list[Path], domain_dir: Path, *, benchmark_name: str
+) -> list[Path]:
+    """Filter task paths to those whose ID is in ``_review.json``'s ``reviewed_tasks``.
+
+    Per ADR-0008 §F: each domain directory may ship a ``_review.json``
+    manifest recording which tasks the operator has audited. Tasks
+    whose ID isn't in ``reviewed_tasks`` are filtered out of the
+    benchmark surface, mirroring the fail-loud philosophy of
+    :func:`~steadfast.metrics.safety.load_safety_bank` (ADR-0007 §G)
+    and :func:`~steadfast.perturbations.distractor.load_distractor_bank`
+    (ADR-0006 §C), scoped to a directory rather than a single file
+    so audit can happen in batches.
+
+    Behavior:
+
+    * No manifest file → legacy behavior; return ``paths`` unchanged.
+      This keeps pre-ADR-0008 benchmarks (anything before week 4)
+      working without forcing a manifest migration.
+    * Manifest present → load it as a :class:`BenchmarkAuditManifest`,
+      filter ``paths`` to those whose task ID appears in
+      ``reviewed_tasks``. If every task is drafted, raise
+      :class:`typer.BadParameter` rather than returning an empty
+      list (silent empty-resolution would be worse than the loud
+      failure).
+    * Path's task can't be loaded → surface the error verbatim;
+      we want operators to see schema bugs at gate time.
+    """
+    manifest_path = domain_dir / "_review.json"
+    if not manifest_path.is_file():
+        return paths
+
+    try:
+        manifest = BenchmarkAuditManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"benchmark {benchmark_name!r} has a malformed audit manifest at "
+            f"{manifest_path}: {exc}"
+        ) from exc
+
+    reviewed = set(manifest.reviewed_tasks)
+    kept: list[Path] = []
+    drafted_ids: list[str] = []
+    for path in paths:
+        task_id = _read_task_id(path)
+        if task_id in reviewed:
+            kept.append(path)
+        else:
+            drafted_ids.append(task_id)
+
+    if drafted_ids:
+        typer.echo(
+            f"warning: benchmark {benchmark_name!r} filtered {len(drafted_ids)} "
+            f"draft task(s) per ADR-0008 §F audit gate "
+            f"({', '.join(sorted(drafted_ids))}); "
+            f"flip them in {manifest_path.name} after operator audit.",
+            err=True,
+        )
+
+    if not kept:
+        raise typer.BadParameter(
+            f"benchmark {benchmark_name!r} resolved to {len(paths)} task file(s) "
+            f"under {domain_dir} but every task is draft per the audit manifest "
+            f"({manifest_path}). Flip at least one to `reviewed_tasks` per the "
+            "ADR-0008 §F checklist before running this benchmark."
+        )
+    return kept
+
+
+def _read_task_id(path: Path) -> str:
+    """Return the ``id`` field from a task JSON file.
+
+    Lightweight read — only parses the JSON, doesn't validate the
+    full :class:`~steadfast.agent.Task` schema. Used by the audit gate
+    to associate filenames with the IDs the manifest lists.
+    """
+    import json as _json
+
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    task_id = data.get("id")
+    if not isinstance(task_id, str):
+        raise typer.BadParameter(
+            f"task file {path} is missing a string `id` field"
+        )
+    return task_id
+
+
 
 
 def parse_metrics(spec: str | None) -> frozenset[str]:
@@ -753,12 +905,20 @@ def _summarize_safety_run(model: str, result: SafetyDimension) -> None:
     """One-line per-model summary for the safety dispatch."""
     cat_rate = f"{result.catastrophic.rate:.3f}" if result.catastrophic.rate is not None else "N/A"
     f1 = f"{result.refusal.f1:.3f}" if result.refusal.f1 is not None else "N/A"
+    # Mirrors ``_summarize_model_run`` cost line so the operator gets
+    # spend feedback parallel to the standard bench loop. ``None``
+    # surfaces as "N/A" rather than "0" so the absence of cost data
+    # (user agent didn't populate ``cost_usd``) is distinguishable
+    # from a $0 run.
+    total_cost = result.total_cost_usd
+    cost_str = f"{total_cost}" if total_cost is not None else "N/A"
     typer.echo(
         f"model={model} catastrophic_rate={cat_rate} "
         f"({result.catastrophic.n_harmful}/{result.catastrophic.n_traps_judged}) "
         f"refusal_f1={f1} "
         f"(tp={result.refusal.tp} fp={result.refusal.fp} "
         f"fn={result.refusal.fn} tn={result.refusal.tn}) "
+        f"cost_usd={cost_str} "
         f"agent_failures={result.n_agent_failures} "
         f"judge_failures={result.n_judge_failures}"
     )

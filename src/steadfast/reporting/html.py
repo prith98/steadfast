@@ -52,6 +52,7 @@ from steadfast.metrics.robustness import (
     RobustnessSubMetricResult,
 )
 from steadfast.metrics.safety import (
+    SAFETY_HARM_CATEGORIES,
     CatastrophicRateResult,
     RefusalF1Result,
     SafetyCaseResult,
@@ -917,6 +918,8 @@ def _render_safety_section(
             continue
         rows.append(_render_safety_row(model, dim))
 
+    category_table = _render_safety_per_category_table(target_models, rows_by_model)
+
     return f"""
 <section class="section">
   <h2>Safety</h2>
@@ -930,8 +933,76 @@ def _render_safety_section(
   ADR-0007 §F; trap-bank operator-audit gate per ADR-0007 §G. §4.3
   escalation behavior is deferred to <code>safety_v2</code>.</p>
   <table>{"".join(rows)}</table>
+  {category_table}
 </section>
 """
+
+
+def _render_safety_per_category_table(
+    target_models: list[str],
+    rows_by_model: dict[str, SafetyDimension],
+) -> str:
+    """Per-harm-category catastrophic-rate breakdown (one row per category, one cell per model).
+
+    The aggregate table above hides which categories the failures
+    concentrate in — the 2026-05-14 pilot's "data_destruction dominates
+    failures" finding (see ``notes/week3_findings.md`` §"Finding 1") is
+    invisible in the top-line catastrophic rate but immediately legible
+    here. Per-category n's are small (~2-3 traps per category in the
+    v0.1 bank); Wilson CIs are wide but honest, matching the top-line
+    table's CI display style.
+
+    v0.1.x clarification fix per ADR-0008 §G (METHODOLOGY §"Versioning"
+    clarification-fix exemption — no metric semantic change; pure
+    presentation of data already in ``SafetyDimension.per_case``).
+    """
+    if not rows_by_model:
+        return ""
+
+    categories = sorted(SAFETY_HARM_CATEGORIES)
+    header_cells = ["<th>Category</th>"] + [
+        f"<th><code>{_h(m)}</code></th>" for m in target_models if m in rows_by_model
+    ]
+    rows = ["<tr>" + "".join(header_cells) + "</tr>"]
+    for category in categories:
+        cells = [f"<td>{_h(category)}</td>"]
+        for model in target_models:
+            dim = rows_by_model.get(model)
+            if dim is None:
+                continue
+            cells.append(f"<td>{_render_safety_category_cell(dim, category)}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    return f"""
+<h3>Catastrophic rate by harm category</h3>
+<p class="subtle">Per-category breakdown of the trap-case harmful rate
+across the four-category v0.1 taxonomy (ADR-0007 §C: data_destruction,
+illegal_advice, pii_exfiltration, social_engineering). N is small
+per category (~2-3 traps); Wilson CIs are wide. Cases where the judge
+failed are dropped from the per-category denominator, same as the
+aggregate. Categories with zero judged traps surface as N/A.</p>
+<table>{"".join(rows)}</table>
+"""
+
+
+def _render_safety_category_cell(dim: SafetyDimension, category: str) -> str:
+    """Per-(model, category) Wilson CI on harmful rate."""
+    traps_in_cat = [
+        c for c in dim.per_case if c.case_kind == "trap" and c.category == category
+    ]
+    judged = [c for c in traps_in_cat if c.harmful is not None]
+    n_judged = len(judged)
+    n_harmful = sum(1 for c in judged if c.harmful)
+    n_total = len(traps_in_cat)
+    if n_judged == 0:
+        return f"<span class='subtle'>N/A (0/{n_total})</span>"
+    ci = wilson_ci(successes=n_harmful, trials=n_judged)
+    rate_cls = "passed" if ci.proportion == 0.0 else "failed"
+    return (
+        f"<span class='{rate_cls}'>{ci.proportion:.3f}</span> "
+        f"{_fmt_ci(ci)} "
+        f"<span class='subtle'>({n_harmful}/{n_judged})</span>"
+    )
 
 
 def _render_safety_row(model: str, dim: SafetyDimension) -> str:
