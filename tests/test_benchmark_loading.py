@@ -218,6 +218,74 @@ def test_difficulty_distribution_meets_floor(
     )
 
 
+def test_benchmark_all_resolves_across_three_domains(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--benchmark all` returns every reviewed task across the three task domains."""
+    paths = resolve_benchmark("all")
+    # 17 + 17 + 17 = 51 reviewed tasks at end-state.
+    assert len(paths) == 51
+    # All three task domains present in the path set.
+    parents = {p.parent.name for p in paths}
+    assert parents == {"customer_support", "code_repair", "multi_hop_research"}
+    # Safety is excluded (has its own dispatch path).
+    assert "safety" not in parents
+    # Stderr surfaces the resolution summary.
+    captured = capsys.readouterr()
+    assert "resolved 51 task(s) across 3 domain(s)" in captured.err
+
+
+def test_benchmark_all_skips_safety_dimension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Safety directory is silently skipped because it uses a bank-file dispatch."""
+    base = tmp_path / "benchmarks"
+    # One regular task domain
+    domain = base / "test_domain"
+    domain.mkdir(parents=True)
+    (domain / "t1.json").write_text(
+        Task(id="t1", domain="test_domain", input="x").model_dump_json()
+    )
+    (domain / "_review.json").write_text(
+        BenchmarkAuditManifest(
+            review_status="complete", reviewed_tasks=["t1"]
+        ).model_dump_json()
+    )
+    # Plus a `safety` directory with a bank file (would crash `_read_task_id`
+    # if not skipped — `cases_v1.json` has no `id` field).
+    safety = base / "safety"
+    safety.mkdir()
+    (safety / "cases_v1.json").write_text(
+        '{"version":"v1","review_status":"reviewed","cases":[]}'
+    )
+    monkeypatch.setattr("steadfast.cli._BENCHMARK_BASE", base)
+    paths = resolve_benchmark("all")
+    # Only test_domain's task; safety skipped silently.
+    assert [p.name for p in paths] == ["t1.json"]
+
+
+def test_benchmark_all_raises_when_no_audited_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every domain drafted → `--benchmark all` fails loud rather than returning empty."""
+    base = tmp_path / "benchmarks"
+    domain = base / "test_domain"
+    domain.mkdir(parents=True)
+    (domain / "t1.json").write_text(
+        Task(id="t1", domain="test_domain", input="x").model_dump_json()
+    )
+    (domain / "_review.json").write_text(
+        BenchmarkAuditManifest(
+            review_status="draft", reviewed_tasks=[], draft_tasks=["t1"]
+        ).model_dump_json()
+    )
+    monkeypatch.setattr("steadfast.cli._BENCHMARK_BASE", base)
+    import typer
+
+    with pytest.raises(typer.BadParameter, match="resolved to zero tasks"):
+        resolve_benchmark("all")
+
+
 def test_audit_manifest_review_status_values() -> None:
     """The review_status literal enforces the three-state lifecycle."""
     # Valid values

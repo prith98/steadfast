@@ -202,6 +202,9 @@ class BenchmarkAuditManifest(BaseModel):
     notes: str | None = None
 
 
+_ALL_BENCHMARK_NAME: Final[str] = "all"
+
+
 def resolve_benchmark(name: str) -> list[Path]:
     """Resolve a benchmark name to a sorted list of task JSON paths.
 
@@ -217,6 +220,13 @@ def resolve_benchmark(name: str) -> list[Path]:
     ``benchmarks/safety/cases_v1.json``-vs-``benchmarks/safety/README.md``
     distinction, plus the new manifest).
 
+    The reserved slug ``"all"`` resolves to every reviewed task across
+    every benchmark domain (excluding ``safety`` — which has its own
+    dispatch path per ADR-0007 §G). Used by the v0.1 full-pilot run
+    per WEEK_5.md to invoke the cross-domain bench in a single
+    command rather than three separate ``--benchmark <domain>``
+    invocations.
+
     Raises :class:`typer.BadParameter` if no tasks match — silent empty
     resolution would be worse than a loud failure.
     """
@@ -225,6 +235,9 @@ def resolve_benchmark(name: str) -> list[Path]:
             f"benchmarks directory not found at {_BENCHMARK_BASE} — are you running "
             "from a Steadfast checkout?"
         )
+
+    if name == _ALL_BENCHMARK_NAME:
+        return _resolve_all_reviewed_domains()
 
     pilot_suffix = "_pilot"
     apply_audit_gate = True
@@ -270,6 +283,62 @@ def resolve_benchmark(name: str) -> list[Path]:
 
     if apply_audit_gate:
         paths = _apply_audit_gate(paths, domain_dir, benchmark_name=name)
+    return paths
+
+
+def _resolve_all_reviewed_domains() -> list[Path]:
+    """Resolve ``--benchmark all`` to every reviewed task across every domain.
+
+    Walks ``_BENCHMARK_BASE``, recursively calls :func:`resolve_benchmark`
+    on each subdirectory that looks like a benchmark domain, and
+    concatenates the audit-gated paths. The ``safety`` directory is
+    skipped — it has its own dispatch path per ADR-0007 §G and uses a
+    bank file rather than per-task JSONs. Subdirectories with no
+    task files or no audited tasks are skipped silently (each raises
+    :class:`typer.BadParameter` from the recursive call, which is
+    absorbed here so a single bare-but-empty future domain doesn't
+    block the cross-domain run).
+
+    Used by the v0.1 full-pilot run per WEEK_5.md so the operator
+    invokes one command rather than iterating per-domain manually.
+    Per ADR-0008 §A the v0.1 leaderboard CIs are scoped per-dimension
+    cross-domain — running in one invocation produces aligned model
+    slugs / output directories without manual aggregation.
+    """
+    paths: list[Path] = []
+    domains_resolved: list[str] = []
+    for subdir in sorted(_BENCHMARK_BASE.iterdir()):
+        if not subdir.is_dir():
+            continue
+        if subdir.name == _SAFETY_BENCHMARK_NAME:
+            # Safety has its own dispatch (ADR-0007 §G); cases_v1.json
+            # is not a Task file and would fail the audit-gate read.
+            continue
+        try:
+            domain_paths = resolve_benchmark(subdir.name)
+        except typer.BadParameter:
+            # No tasks or all-drafted; cross-domain run continues
+            # without this domain. Logged so the operator sees the gap.
+            typer.echo(
+                f"--benchmark {_ALL_BENCHMARK_NAME!r}: skipping domain "
+                f"{subdir.name!r} (no audited tasks).",
+                err=True,
+            )
+            continue
+        paths.extend(domain_paths)
+        domains_resolved.append(subdir.name)
+
+    if not paths:
+        raise typer.BadParameter(
+            f"benchmark {_ALL_BENCHMARK_NAME!r} resolved to zero tasks — no "
+            f"audited domains found under {_BENCHMARK_BASE}. Run the operator-audit "
+            "pass per ADR-0008 §F before invoking --benchmark all."
+        )
+    typer.echo(
+        f"--benchmark {_ALL_BENCHMARK_NAME!r} resolved {len(paths)} task(s) "
+        f"across {len(domains_resolved)} domain(s): {', '.join(domains_resolved)}",
+        err=True,
+    )
     return paths
 
 
