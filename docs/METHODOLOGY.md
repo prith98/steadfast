@@ -228,6 +228,22 @@ Implementation contracts pinned in ADR-0007. v0.1 ships §4.1 and §4.2; §4.3 d
 
 ---
 
+## Benchmark composition
+
+The v0.1 benchmark spans **~50 tasks across 3 domains** per the SPEC commitment, with per-domain contracts pinned in ADR-0008:
+
+- **customer_support** (~17 tasks): policy lookups, eligibility decisions, and customer-message handling. Mix of `exact_match` and `rubric` judges (skewed toward exact_match because policy answers are concrete).
+- **code_repair** (~17 tasks): rubric-judged code fixes. **No executable sandbox in v0.1** (ADR-0008 §C, mirroring ADR-0007 §B's prompt-only threat-model rationale). Each task ships a (broken code, intended behavior, rubric) triple; the agent emits a fix; `RubricJudge` adjudicates against the rubric.
+- **multi_hop_research** (~17 tasks): self-contained synthesized prompts (ADR-0008 §D). Each task embeds 2-4 evidence snippets and asks for a conclusion that requires combining them across at least two reasoning hops. **No live web/search tool fixture in v0.1**; tests multi-hop reasoning over given evidence, not retrieval.
+
+Across the full benchmark, the ground-truth distribution targets ~40% `exact_match` / ~60% `rubric`, falling out naturally from the task-content distribution rather than enforced per-domain (ADR-0008 §E).
+
+**Difficulty distribution.** ≥10% `"hard"` tasks per domain per METHODOLOGY §3.4, with diverse hard-task triggers (missing information, contradictory premises, genuinely under-determined) so the refusal-calibration signal doesn't collapse to a single failure mode (ADR-0008 §A).
+
+**Operator-audit gate.** Each domain ships a `_review.json` manifest recording which tasks the operator has audited. The CLI's loader refuses to surface tasks not in `reviewed_tasks` — same fail-loud philosophy as `load_safety_bank()` (ADR-0007 §G) and `load_distractor_bank()` (ADR-0006 §C), scoped to a directory rather than a single file so audit can happen in batches (ADR-0008 §F).
+
+---
+
 ## Aggregation: the "reliability score"
 
 We resist the temptation to publish a single scalar reliability score on the leaderboard. The dimensions are not commensurable: a model that's perfectly consistent but catastrophically unsafe is worse than the average of its scores would suggest.
@@ -259,6 +275,8 @@ We document these explicitly because honest documentation of limitations is a qu
     - **Refusal F1 (§4.2)** treats empty responses as truth-positive false negatives, dragging F1 down on every trap case the filter blanks. Gemini's 0.462 F1 in the safety pilot is not a refusal-quality signal — it's the fraction of trap responses the content filter let through, weighted against `tp + fp + fn`.
     The v0.2 fix (queued under `refusal_v2`) reclassifies `(refused=False, confidence=None, answer="")` reps as either no-signal or as REFUSE — same fix; the safety pilot expands its blast radius from one dimension to two. Until v0.2 lands, leaderboard readers should treat any model with a non-trivial `n_empty_answers` rate as having an asterisk on every refusal-derived number, and inspect the per-case JSON drill-down before drawing conclusions. Affects any provider with a similar content-filter surface — Gemini is the only one observed in v0.1 pilots.
 - **Safety dimension is prompt-only.** Steadfast safety v0.1 measures whether the model produces a harmful textual artifact when prompted with a trap case (METHODOLOGY §4 / ADR-0007 §B). It does *not* execute model output against a tool sandbox, so tool-execution traps ("agent has a shell tool, trap is `rm -rf`") are out of scope. ToolEmu / AgentDojo / AILuminate-tool own the tool-execution surface; wrapping one of them is a v0.2 path. The v0.1 trap bank is also small (~10 cases) — the catastrophic-rate Wilson CI is correspondingly wide on a perfect score (0/10 → [0.000, 0.278]), and v0.2 grows the bank past 50 cases per ADR-0007 §H.
+- **code_repair is rubric-judged, not test-executed.** Steadfast code_repair v0.1 measures the quality of the model's *emitted* diff against a curated rubric (ADR-0008 §C), mirroring the safety dimension's prompt-only threat-model rationale (ADR-0007 §B). It does *not* apply the diff and run a test suite — sandboxed code execution is owned by SWE-bench / SWE-bench-Live / Princeton's SWE harness. Wrapping one of them is the v0.2 path. The correlation between rubric-judged-quality and executed-test-pass-rate is the v0.2 validation target.
+- **multi_hop_research is reasoning-only, not retrieval-grounded.** Steadfast multi_hop_research v0.1 embeds evidence in the prompt and measures reasoning across hops (ADR-0008 §D); it does *not* connect the agent to a live Search tool or knowledge base. Live-tool multi-hop research is a v0.2 path coupled with the OpenAI Agents SDK adapter and a deterministic Search-tool fixture.
 
 ## Versioning
 
