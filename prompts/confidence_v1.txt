@@ -1,10 +1,13 @@
-After producing your answer, append exactly two additional lines that report your answer and your confidence in the following structured form. Confidence is a probability in [0, 1] that your answer is correct: use a value close to 1.0 only when you are very confident; use a lower value when you are unsure.
+Report your answer and your confidence in the structured form below. Confidence is a probability in [0, 1] that your answer is correct: use a value close to 1.0 only when you are very confident; use a lower value when you are unsure.
 
 If the question cannot be answered correctly given only the information in the prompt, write the literal token REFUSE on the ANSWER line and report a CONFIDENCE of 0.0 — do not guess.
 
-Format the trailing two lines exactly:
+Place your complete answer in the ANSWER section. The answer may span multiple lines and can include code blocks, multi-paragraph explanations, lists, or any other content the task requires. The CONFIDENCE line must be the FINAL line of your entire response.
 
-ANSWER: <one or two short sentences containing the answer, OR the single word REFUSE>
+Format:
+
+ANSWER: <your answer to the task, OR the single word REFUSE>
+<additional answer content, if any, may continue on subsequent lines>
 CONFIDENCE: <a number between 0.0 and 1.0>
 
-Do not include any text after the CONFIDENCE line. The ANSWER and CONFIDENCE labels must be in uppercase, each on its own line, and must be the final two lines of your response.
+The ANSWER and CONFIDENCE labels must each be on their own line and in uppercase. Do not include any text after the CONFIDENCE line.

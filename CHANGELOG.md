@@ -285,6 +285,33 @@ here.
 
 ### Fixed
 
+- **`prompts/confidence_v1.txt` relaxed to allow multi-line / code-block
+  answers** (clarification fix per METHODOLOGY §"Versioning"; intent
+  was structured-confidence elicitation, not summary-only ANSWER).
+  Previous wording instructed agents to put the answer inside the
+  ANSWER line as "one or two short sentences", which forced models
+  emitting code blocks or multi-paragraph content to either (a)
+  collapse to a summary that omitted the artifact or (b) emit the
+  body before the structured tail, where the parser would discard
+  it. Surfaced by the 2026-05-14 week-5 Day-1 smoke run on
+  `benchmarks/code_repair/`: gpt-5.2 produced correct corrected
+  functions in code blocks before the ANSWER/CONFIDENCE tail; the
+  parser captured only the post-ANSWER summary; rubric judges scored
+  0.5 (correct in spirit, missing the artifact). Aggregate Brier
+  inflated from ~0.13 (true value) to 0.45; overconfidence rate
+  inflated from 0.13 to 0.44. After the fix: agents place the
+  full answer between the ANSWER and CONFIDENCE labels (parser
+  already supported multi-line capture between the two), Brier
+  recovers to 0.13, and code_repair goes from 0/17 to 15/17 in the
+  smoke. `CONFIDENCE_PROMPT_VERSION` stays `"v1"`.
+- **`benchmarks/multi_hop_research/mhr_014.json` ambiguity reworded.**
+  Original "3-year hiatus" phrasing was ambiguous between
+  "release in year+3" (= 2017) and "no album for 3 years, then
+  release in year+4" (= 2018). Reworded Fact 2 to state the
+  third album's year explicitly (2010) and Fact 3 to use "exactly
+  3 years after their third album" so the chain is unambiguous.
+  Caught in the 2026-05-14 week-5 Day-1 smoke when gpt-5.2 picked
+  the second interpretation.
 - **`ExactMatchJudge.canonicalize` hyphenation insensitivity** (clarification
   fix per METHODOLOGY §"Versioning"; not a metric-version event because the
   original ADR-0003 §B.3 substring-containment intent was hyphenation-
