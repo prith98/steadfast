@@ -1,0 +1,17 @@
+{
+  "id": "mhr_014",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The fictional band Northwind released 5 studio albums between 2008 and 2017.\nFact 2: Their first 3 albums were released in consecutive years starting in 2008.\nFact 3: After their third album, they took a 3-year hiatus before releasing their fourth album.\nFact 4: Their fifth album was released 4 years after their fourth.\n\nQuestion: In what year was Northwind's fifth studio album released? Answer with a single 4-digit year.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "2017"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-discography-temporal-chain",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

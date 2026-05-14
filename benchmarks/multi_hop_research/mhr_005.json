@@ -1,0 +1,17 @@
+{
+  "id": "mhr_005",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The Bluestone Foundation distributes its annual grants on March 1.\nFact 2: For 2026, the Foundation announced a total grant pool of $3.2 million.\nFact 3: The Foundation's bylaws require that exactly 60% of the pool be allocated to scientific research grants, 25% to humanities, and the remaining percentage to general arts.\nFact 4: The arts allocation is split equally among 8 recipient organizations.\n\nQuestion: How much money does each individual arts-recipient organization receive in the 2026 grant cycle? Answer in dollars in the form '$XX,XXX' or '$X,XXX' (no decimals).",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "$60,000"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-percentage-allocation-then-divide",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

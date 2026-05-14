@@ -1,0 +1,17 @@
+{
+  "id": "cr_003",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to return the user's full name; instead it raises `KeyError: 'middle_name'` on users that have no middle name. The function should handle missing middle names gracefully — return `\"<first> <last>\"` when there is no middle name and `\"<first> <middle> <last>\"` when there is.\n\n```python\ndef full_name(user: dict[str, str]) -> str:\n    return f\"{user['first_name']} {user['middle_name']} {user['last_name']}\"\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. Assume `first_name` and `last_name` are always present.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the function to (a) return `\"<first> <last>\"` (single space between) when `middle_name` is missing OR present-but-empty-string, (b) return `\"<first> <middle> <last>\"` when middle_name is non-empty, (c) NOT raise on missing key, AND (d) preserve the name `full_name` and signature `(user: dict[str, str]) -> str`. Accepted patterns: `user.get('middle_name')` with a truthiness check, conditional assembly, or join-on-list with a filter for None/empty. Score 0.5 if the function avoids the KeyError but produces a double-space (`\"<first>  <last>\"`) when middle_name is missing — the bug is fixed but the formatting requirement isn't fully met. Score 0.0 for unchanged code, a refused answer, a fix that introduces a new bug (e.g., always returns 'first last' even when middle_name is present), or a fix that swallows other exceptions (e.g., bare `try/except` that also masks missing first_name)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-optional-dict-key-handling",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Use user.get('middle_name'); branch on whether it's present and non-empty before f-string assembly."
+  }
+}

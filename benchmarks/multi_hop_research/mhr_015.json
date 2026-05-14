@@ -1,0 +1,17 @@
+{
+  "id": "mhr_015",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: In the fictional country of Velmoria, citizens are eligible to vote in national elections at age 18 or older.\nFact 2: Voters must have been registered for at least 90 days before the election date to cast a ballot.\nFact 3: Velmorian citizens residing abroad are eligible to vote ONLY if they registered through the foreign-affairs ministry; the 90-day rule still applies.\nFact 4: A specific voter under review: Velmorian citizen, age 19, resides abroad, registered through the foreign-affairs ministry 75 days ago. The election is in 20 days.\n\nQuestion: Will this voter be eligible to cast a ballot in the upcoming election? Answer 'yes' or 'no'.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "yes"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-voting-eligibility-multi-criterion",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

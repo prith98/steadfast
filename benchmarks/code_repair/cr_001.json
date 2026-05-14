@@ -1,0 +1,17 @@
+{
+  "id": "cr_001",
+  "domain": "code_repair",
+  "input": "Fix the off-by-one bug in this Python function. It should return the sum of integers from 1 to N inclusive. Currently it omits N.\n\n```python\ndef sum_to_n(n: int) -> int:\n    total = 0\n    for i in range(1, n):\n        total += i\n    return total\n```\n\nReturn the corrected function in a code block. Do not change the function name, signature, or surrounding behavior.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the corrected loop bound includes N — either `range(1, n + 1)` or `range(n + 1)` or an equivalent that iterates over 1..N inclusive — AND (b) the function preserves the same name `sum_to_n`, the same signature `(n: int) -> int`, and returns the integer sum. Closed-form replacements like `return n * (n + 1) // 2` are full credit if they preserve the signature. Score 0.5 if the fix is mathematically correct but the signature or function name was renamed, or if the candidate emits a comment-only 'I would change range(1, n) to range(1, n+1)' without the code. Score 0.0 for an answer that introduces a new bug (e.g., `range(0, n+1)` is acceptable since 0 contributes 0 to the sum, but `range(0, n)` re-introduces the off-by-one), refuses to answer, or returns the original code unchanged."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-off-by-one-range-bound",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Change `range(1, n)` to `range(1, n + 1)`"
+  }
+}

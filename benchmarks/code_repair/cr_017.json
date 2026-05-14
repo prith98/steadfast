@@ -1,0 +1,17 @@
+{
+  "id": "cr_017",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to extract the FIRST HTML anchor tag's `href` URL from a string of HTML and return it. The current implementation uses a greedy regex match that grabs from the first `href=\"` all the way to the LAST closing quote in the string, picking up everything in between (including any other tags, attributes, and content). For example, on input `'<a href=\"https://a.com\">a</a><a href=\"https://b.com\">b</a>'` it returns `'https://a.com\">a</a><a href=\"https://b.com'` instead of `'https://a.com'`.\n\n```python\nimport re\n\ndef first_href(html: str) -> str | None:\n    match = re.search(r'href=\"(.*)\"', html)\n    return match.group(1) if match else None\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. The function should return the href value of the FIRST anchor tag in the input, with no surrounding markup.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the function to use a NON-GREEDY match for the href value — accepted patterns: `r'href=\"(.*?)\"'` (the `?` after `*` makes it non-greedy), `r'href=\"([^\"]*)\"'` (negated character class), or an equivalent. Preserves the function name and signature. On the example input, the corrected function returns `'https://a.com'`. Score 0.5 for a fix that switches to an HTML parsing library (e.g. BeautifulSoup or lxml) — semantically more correct in the general case (regex on HTML has well-known limits) BUT introduces a new dependency outside the scope of the original function and a refused-for-regex-on-HTML stance would be a valid alternative. Score 0.0 for unchanged code, refused answer, or a fix that doesn't actually fix the greedy match (e.g. `r'href=\"(.+)\"'` — still greedy)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-greedy-regex-match",
+    "expected_difficulty": "medium",
+    "expected_fix_sketch": "Change the regex to non-greedy: `r'href=\"(.*?)\"'` or `r'href=\"([^\"]*)\"'`."
+  }
+}

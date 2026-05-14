@@ -1,0 +1,16 @@
+{
+  "id": "cs_010",
+  "domain": "customer_support",
+  "input": "A customer writes: 'I placed an order yesterday and just realized I gave the wrong shipping address. Can you change it?' The store's policy on address changes: address changes are permitted any time before the order has shipped. Orders ship 1-2 business days after they're placed. The customer's order was placed 1 day ago and has not yet shipped per the store's order-status check. Answer the customer's request concisely.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "yes"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-pre-ship-address-change-eligibility",
+    "expected_difficulty": "easy"
+  }
+}

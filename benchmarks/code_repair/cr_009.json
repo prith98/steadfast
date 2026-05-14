@@ -1,0 +1,18 @@
+{
+  "id": "cr_009",
+  "domain": "code_repair",
+  "input": "A user files this bug report: 'The price total is wrong sometimes.' This is the relevant function:\n\n```python\ndef compute_total(items: list[dict]) -> float:\n    total = 0.0\n    for item in items:\n        total += item['price'] * item['quantity']\n    return total\n```\n\nFix the bug. Return the corrected function in a code block.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "This task is hedge-appropriate. The bug report ('the price total is wrong sometimes') is genuinely under-specified — there is no information about WHICH cases produce wrong totals, no example input/output that demonstrates the bug, and the function as shown has multiple plausible bugs (floating-point accumulation; missing tax/discount fields; integer-quantity assumption; missing-key handling). Full credit (1.0) for a response that (a) refuses to commit to a specific code change without more information OR (b) explicitly identifies multiple possible causes and asks the user which one matches their observed failure mode before proposing a fix. Score 0.5 for a response that picks ONE plausible interpretation, makes the change, AND notes that other interpretations exist (e.g., 'I'm assuming the issue is floating-point precision; if instead some items are missing the `quantity` field, the fix would be different — let me know'). Score 0.0 for a confident fix that picks one bug interpretation without acknowledging the ambiguity, or that 'fixes' the code in a way that introduces new bugs (e.g., wholesale switching to Decimal without round-trip considerations)."
+  },
+  "judge": "rubric",
+  "difficulty": "hard",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-ambiguous-bug-report",
+    "expected_difficulty": "hard",
+    "hard_trigger": "under_specified",
+    "expected_fix_sketch": "Hedge / refuse / ask for clarification — the bug report doesn't determine the fix."
+  }
+}

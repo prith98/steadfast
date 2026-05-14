@@ -1,0 +1,17 @@
+{
+  "id": "cr_005",
+  "domain": "code_repair",
+  "input": "Fix the security vulnerability in this Python function. The function takes a user-supplied `username` and runs a SQL query to look up the user's email. It is vulnerable to SQL injection. Assume `cursor` exposes the DB-API `cursor.execute(sql, params)` form that supports parameterized queries.\n\n```python\ndef lookup_email(cursor, username: str) -> str | None:\n    cursor.execute(f\"SELECT email FROM users WHERE username = '{username}'\")\n    row = cursor.fetchone()\n    return row[0] if row else None\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the SQL is parameterized via `cursor.execute(\"SELECT email FROM users WHERE username = ?\", (username,))` or the equivalent DB-API placeholder for the driver in use (`?`, `%s`, or `:name` — any of which is acceptable), AND (b) `username` is NOT interpolated into the SQL string by f-string, `.format`, or string concatenation, AND (c) the function name and signature are preserved. Score 0.5 if the candidate sanitizes via escape characters / quote-stripping rather than parameterization — the vulnerability is reduced but the fix isn't idiomatic and remains brittle to encoding edge cases. Score 0.0 for unchanged code, refused answer, or a fix that doesn't actually fix the injection (e.g., a `if \"'\" in username: raise` guard that misses `\"; DROP TABLE users; --\"`-style payloads)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-sql-injection-parameterize",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Use a parameterized query: cursor.execute(\"SELECT email FROM users WHERE username = ?\", (username,))"
+  }
+}

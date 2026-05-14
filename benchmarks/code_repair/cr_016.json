@@ -1,0 +1,17 @@
+{
+  "id": "cr_016",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. Its type annotation says it returns `int`, but the body returns a `str`. Callers downstream are crashing with type errors because they're doing integer arithmetic on the result. The intended behavior is to return the count of vowels in the input string, as an integer.\n\n```python\ndef count_vowels(s: str) -> int:\n    vowels = 'aeiouAEIOU'\n    return ''.join(c for c in s if c in vowels)\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the function returns an integer count of vowels in `s` — accepted patterns: `return sum(1 for c in s if c in vowels)`, `return len([c for c in s if c in vowels])`, `return sum(c in vowels for c in s)`, etc., AND (b) preserves the function name and signature. Score 0.5 for a fix that returns a count but as a string (`return str(sum(...))`) — fixes the immediate bug observably but still violates the annotated return type. Score 0.0 for unchanged code, refused answer, or a fix that returns the wrong count (e.g. counts only lowercase, or counts unique vowels rather than occurrences when the spec is count-of-occurrences)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-type-annotation-lies",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Replace the join with `sum(1 for c in s if c in vowels)` or `len([c for c in s if c in vowels])`."
+  }
+}

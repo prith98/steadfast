@@ -1,0 +1,17 @@
+{
+  "id": "mhr_009",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: A direct flight from Vancouver to Tokyo takes approximately 10 hours and 30 minutes.\nFact 2: Tokyo is 17 hours ahead of Vancouver in standard time (PT).\nFact 3: A flight departs Vancouver on Wednesday at 1:30 PM Vancouver time.\n\nQuestion: At what local Tokyo day and time does the flight land? Answer in the form 'Day H:MM AM/PM' (e.g., 'Friday 8:15 AM'). Day refers to the calendar day in Tokyo.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "Thursday 5:00 PM"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-flight-arrival-with-timezone",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "cr_008",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to compute the longest run of identical consecutive characters in a string and return the run length. It currently returns 0 for non-empty inputs because the function never returns the computed value.\n\n```python\ndef longest_run(s: str) -> int:\n    if not s:\n        return 0\n    best = 1\n    current = 1\n    for i in range(1, len(s)):\n        if s[i] == s[i - 1]:\n            current += 1\n            if current > best:\n                best = current\n        else:\n            current = 1\n    # TODO\n```\n\nReturn the corrected function in a code block. Do not change the function name, signature, or the working portions of the logic.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the function returns `best` (or an equivalent that returns the longest run), AND (b) preserves the existing correct logic — early return on empty string; tracking `current` and `best` per character; resetting `current` on non-match. Score 0.5 if the candidate adds the return statement but inadvertently changes the algorithm (e.g., returns `current` instead of `best`, returning only the trailing run length). Score 0.0 for an unchanged function (TODO left in place), a refused answer, or a fix that crashes on the empty-string input (e.g., removing the early return)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-missing-return-statement",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Replace the `# TODO` placeholder with `return best`."
+  }
+}

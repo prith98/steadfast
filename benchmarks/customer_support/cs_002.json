@@ -1,0 +1,16 @@
+{
+  "id": "cs_002",
+  "domain": "customer_support",
+  "input": "A customer asks: 'When will my order arrive?' Their order shipped via standard ground service three business days ago. The shipping carrier's published standard ground service window is 5-7 business days from ship date. Answer the customer with the expected number of remaining business days as a range. Answer in the form 'X-Y business days'.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "2-4 business days"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-arithmetic-on-shipping-window",
+    "expected_difficulty": "easy"
+  }
+}

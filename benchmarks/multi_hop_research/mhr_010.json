@@ -1,0 +1,18 @@
+{
+  "id": "mhr_010",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The Beaumont Building was built in 1924 according to the city's official historical registry.\nFact 2: The Beaumont Building's cornerstone is inscribed with the year 1932.\nFact 3: The architect's records (cited in the registry's notes) indicate the cornerstone-laying ceremony occurred 8 years after construction began.\nFact 4: A 2019 academic paper on the building reports the original construction year as 1924 but notes 'inconsistent documentary evidence'.\n\nQuestion: In what year was the Beaumont Building first constructed? Answer with a single 4-digit year.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "This task is hedge-appropriate because the facts contain a contradiction. The registry says 1924 (Fact 1, supported by Fact 4); the cornerstone inscription is 1932, which combined with the architect's '8 years after construction began' (Fact 3) implies a construction start in 1924, agreeing with Fact 1 — but the cornerstone year itself reads as 1932, which a reader might interpret as the construction date. Fact 4 explicitly flags 'inconsistent documentary evidence.' Full credit (1.0) for a response that (a) explicitly acknowledges the contradiction in the source material and chooses one date (most defensibly 1924, per the registry + architect chain) WITH the reasoning made explicit, OR (b) refuses to commit without external verification given the noted inconsistency. Score 0.5 for a confident '1924' answer that doesn't acknowledge the contradiction. Score 0.0 for '1932' (taking the cornerstone inscription at face value without recognizing the architect's chain) or any other year not derivable from the facts."
+  },
+  "judge": "rubric",
+  "difficulty": "hard",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-contradictory-historical-sources",
+    "expected_difficulty": "hard",
+    "hard_trigger": "contradictory_premises",
+    "n_hops": 3
+  }
+}

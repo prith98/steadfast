@@ -1,0 +1,17 @@
+{
+  "id": "mhr_011",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: A standard shipping container has an internal volume of 33 cubic meters.\nFact 2: Each case occupies 0.06 cubic meters of stacked-space inside a shipping container (accounting for case dimensions and unavoidable air gaps between cases).\nFact 3: Each case contains 12 bottles, and each bottle holds 750 milliliters of olive oil.\nFact 4: One liter equals 1,000 milliliters.\n\nQuestion: How many TOTAL liters of olive oil ship in one fully-loaded container? Show your work briefly and end with the answer.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the answer to derive 4,950 liters (also acceptable: 4950 liters, 4.95 thousand liters; rounding errors of ±5 L are acceptable). The reasoning chain must visibly use all four facts: (a) cases per container = 33 / 0.06 = 550, (b) bottles per container = 550 × 12 = 6,600, (c) milliliters per container = 6,600 × 750 = 4,950,000, (d) convert mL → L via Fact 4 to get 4,950 L. Score 0.5 if the final answer is 4,950 L but the reasoning skips showing how Fact 4 (mL → L conversion) was applied, OR if the chain is correct but the final unit is left as mL (4,950,000 mL) rather than the requested liters. Score 0.0 for any other final answer (e.g., 550 cases reported as the answer, or 6,600 bottles, or a number derived by treating one of the facts as inapplicable), or refused answer."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-volume-and-quantity-chain",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

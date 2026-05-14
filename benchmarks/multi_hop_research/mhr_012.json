@@ -1,0 +1,17 @@
+{
+  "id": "mhr_012",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: In the fictional jurisdiction of Larenia, a contract dispute is governed by the contract's stated 'governing law' jurisdiction.\nFact 2: If the contract is silent on governing law, the dispute is governed by the law of the jurisdiction where the contract was signed.\nFact 3: If neither the contract nor the signing location can be determined, Larenian default rules apply, which adopt the law of the defendant's domicile.\nFact 4: A specific dispute under review: the contract names no governing law; the signing location is documented as Coastal Province (within Larenia); the defendant is domiciled in Mountain Province (within Larenia).\n\nQuestion: Which jurisdiction's law governs this dispute? Answer with one of: 'Larenian default', 'Coastal Province law', 'Mountain Province law', 'The contract's named jurisdiction'.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for 'Coastal Province law'. Reasoning required: Fact 1 doesn't apply (no governing law named); Fact 2 applies because the signing location IS determinable (Coastal Province), so we use the signing-location's law; Fact 3's default rules and the defendant's domicile in Mountain Province are NOT reached because Fact 2 resolves the question. Score 0.5 for the right answer with reasoning that misidentifies which rule applies (e.g. 'Coastal Province because that's the contract's named jurisdiction' — wrong; the contract names none). Score 0.0 for 'Mountain Province law' (skipping past Fact 2 to apply Fact 3's defendant-domicile default), 'Larenian default' (same skip), 'The contract's named jurisdiction' (the contract names none — this is a misreading), or refusing to answer."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-legal-rule-precedence-chain",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

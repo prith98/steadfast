@@ -1,0 +1,17 @@
+{
+  "id": "cr_004",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to read characters from a generator until it hits the sentinel character '@' and return the accumulated string, but it currently loops forever because of a missing advance.\n\n```python\ndef read_until_at(chars):\n    out = []\n    c = next(chars)\n    while c != '@':\n        out.append(c)\n    return ''.join(out)\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. Assume the generator is guaranteed to yield '@' eventually.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the loop advances `c` on each iteration via a `c = next(chars)` inside the while body, OR an equivalent restructure (e.g., `for c in chars: if c == '@': break; out.append(c)`) that consumes the generator one character at a time AND stops at '@' without appending it, AND (b) preserves the function name `read_until_at`. Score 0.5 if the fix advances `c` but ALSO appends the '@' sentinel into `out` (breaking the spec). Score 0.0 for unchanged infinite-loop code, a refused answer, or a fix that consumes the generator non-incrementally (e.g., `list(chars)`) which would consume past '@' for callers that wanted to keep reading."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-missing-loop-advance",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Inside the while loop, after `out.append(c)`, call `c = next(chars)` so the loop variable advances."
+  }
+}

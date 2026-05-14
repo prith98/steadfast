@@ -1,0 +1,17 @@
+{
+  "id": "mhr_008",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The Vance Scholarship is open to undergraduate students who maintain at least a 3.5 GPA AND have completed at least 60 credit hours toward their degree.\nFact 2: Maria has completed 72 credit hours and has a 3.42 GPA.\nFact 3: Jordan has completed 54 credit hours and has a 3.71 GPA.\nFact 4: The Vance Scholarship also includes a one-time appeal process for applicants who fall below the GPA threshold by 0.1 or less, provided they meet ALL other criteria.\n\nQuestion: Of Maria and Jordan, which applicant(s) are eligible — either directly or via the appeal process — to apply for the Vance Scholarship? Respond with one of: 'Maria only', 'Jordan only', 'Both', 'Neither'.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for an answer that identifies 'Maria only'. Reasoning required: Maria meets the credit-hour threshold (72 ≥ 60) and falls below the GPA threshold by 0.08 (3.5 − 3.42), which is within the 0.1 appeal window — she's eligible via appeal. Jordan exceeds the GPA threshold (3.71 ≥ 3.5) but has only 54 credit hours, below the 60-hour requirement — the appeal process is not stated to cover the credit-hour threshold, and the prompt says the appeal applies 'provided they meet ALL other criteria', which Jordan does not. Score 0.5 for an answer that identifies the right one but mis-explains why (e.g., 'Maria only, because her GPA is closer to 3.5'). Score 0.0 for 'Both', 'Jordan only', 'Neither', or for a refused answer (the prompt is fully determined)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-eligibility-logic-with-appeal",
+    "expected_difficulty": "medium",
+    "n_hops": 4
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "cr_014",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python code. The function `safe_increment` is called concurrently by multiple threads in a thread pool. Each call should increment a global counter atomically, but observed counter values after concurrent runs are lower than the number of calls — increments are being lost to the race condition.\n\n```python\nimport threading\n\n_counter = 0\n\ndef safe_increment() -> int:\n    global _counter\n    _counter += 1\n    return _counter\n```\n\nReturn the corrected function (and any required module-level setup) in a code block. The fix must work correctly under concurrent threaded callers.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires a fix that (a) introduces a `threading.Lock` (or equivalent: `threading.RLock`, or atomic primitives from a library like `multiprocessing.Value` for the integer), AND (b) wraps the `_counter += 1` AND the return in the same critical section so the returned value reflects the post-increment state seen by that thread — NOT a stale read. Acceptable pattern: `with _lock: _counter += 1; return _counter`. Score 0.5 for a fix that locks the increment but NOT the return read (the returned value can be a later thread's incremented value — common subtle bug). Score 0.0 for unchanged code, refused answer, suggesting `asyncio.Lock` (wrong abstraction for threaded callers), or using `threading.local` (doesn't fix the global counter race — each thread gets its own counter, no sharing)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-real-threading-race-condition",
+    "expected_difficulty": "medium",
+    "expected_fix_sketch": "Introduce a module-level `threading.Lock`; wrap both the increment and the return inside `with _lock:`."
+  }
+}

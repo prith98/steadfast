@@ -1,0 +1,16 @@
+{
+  "id": "cs_011",
+  "domain": "customer_support",
+  "input": "A customer asks: 'I pre-ordered the new game console on March 10. When will it ship?' The store's pre-order policy: pre-orders ship on (a) the manufacturer's published release date, OR (b) 2 business days after the order was placed, whichever is LATER. The manufacturer's published release date for this console is May 22. The order was placed March 10 (well before the release date). Pre-order processing is on-track per the store's order-status system. Answer with the expected ship date in the form 'Month DD' (e.g. 'May 22').",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "May 22"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-pre-order-release-date-with-floor",
+    "expected_difficulty": "medium"
+  }
+}

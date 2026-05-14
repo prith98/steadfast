@@ -1,0 +1,17 @@
+{
+  "id": "mhr_017",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: A worker earns $25.00 per hour for the first 40 hours of a workweek.\nFact 2: Hours beyond 40 in the same week are paid at 1.5x the base hourly rate.\nFact 3: The worker pays a flat 22% income tax on gross earnings.\nFact 4: In a specific week, the worker logged 46 hours of work.\n\nQuestion: What is the worker's take-home pay (after tax) for the week? Answer in dollars in the form '$NNN.NN' (e.g. '$800.00').",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "$955.50"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-overtime-pay-with-tax",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

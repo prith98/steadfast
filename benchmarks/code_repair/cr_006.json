@@ -1,0 +1,17 @@
+{
+  "id": "cr_006",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to compute the number of whole days between two UTC datetimes, but it currently returns negative numbers when the first argument is later than the second (and the caller expects the function to be symmetric — always non-negative).\n\n```python\nfrom datetime import datetime\n\ndef days_between(a: datetime, b: datetime) -> int:\n    return (b - a).days\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. Assume both datetimes are timezone-aware UTC.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the function always returns a non-negative integer, achieved via `abs((b - a).days)` OR by reordering operands with a conditional swap, AND (b) preserves the function name and signature, AND (c) doesn't change to a sub-day resolution (the spec is whole days). Score 0.5 for an answer that fixes the sign but uses `.total_seconds() / 86400` with int truncation instead of `.days`, which introduces a subtle rounding bug for sub-day differences. Score 0.0 for unchanged code, refused answer, or a fix that introduces a new bug (e.g., returning floats; ignoring the timezone-aware UTC assumption and stripping tzinfo)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-symmetric-date-diff",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Return abs((b - a).days)"
+  }
+}

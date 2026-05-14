@@ -1,0 +1,17 @@
+{
+  "id": "cr_011",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to return True when two floating-point numbers are 'approximately equal' (within a small tolerance). It currently returns False for values that should be considered equal due to floating-point representation error.\n\n```python\ndef approximately_equal(a: float, b: float) -> bool:\n    return a == b\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. The function should treat values like `0.1 + 0.2` and `0.3` as equal.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the function compares with a tolerance rather than exact equality — accepted approaches: `math.isclose(a, b)` with default tolerances, `math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-9)` or similar, OR `abs(a - b) < epsilon` with an explicit small epsilon (e.g. `1e-9`), AND (b) preserves the function name and signature. Score 0.5 for a fix that uses a tolerance but with an inappropriately large epsilon (e.g. 0.1 or 1.0) which would make obviously-different numbers compare equal, OR for an absolute-only comparison `abs(a - b) < eps` that's correct in spirit but doesn't handle very large or very small magnitudes (a known limitation worth flagging). Score 0.0 for unchanged code, refused answer, or a fix that introduces a new bug (e.g. `round(a, 9) == round(b, 9)` — works for many cases but is methodologically less standard than `math.isclose`)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-float-equality-with-tolerance",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Use math.isclose(a, b) instead of `a == b`."
+  }
+}

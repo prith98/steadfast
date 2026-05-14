@@ -1,0 +1,18 @@
+{
+  "id": "mhr_007",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The Carnegie Lecture Series runs from October through April every academic year.\nFact 2: Each lecture is preceded by a one-hour reception in the Donovan Atrium.\nFact 3: Tonight's lecture begins at 7:00 PM in Whitford Hall.\n\nQuestion: How many lectures are scheduled across the upcoming academic year? Answer with a single integer.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "This task is hedge-appropriate. The facts establish the time window of the lecture series (October-April) and tonight's logistics, but DO NOT establish how many lectures occur within the window (could be one per month, one per week, irregular, etc.). Full credit (1.0) for a response that either (a) refuses to answer (e.g., emits the literal REFUSE token) OR (b) explicitly states the answer cannot be determined from the available facts and identifies the missing information (frequency of lectures within the season). Score 0.5 for a hedged answer that provides a range or a 'most plausible' number while explicitly noting the assumption used (e.g., 'assuming one lecture per month, 7 lectures'). Score 0.0 for any confident single-number answer (e.g., '7' or '28') that treats the available facts as sufficient."
+  },
+  "judge": "rubric",
+  "difficulty": "hard",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-missing-information-frequency",
+    "expected_difficulty": "hard",
+    "hard_trigger": "missing_information",
+    "n_hops": 2
+  }
+}

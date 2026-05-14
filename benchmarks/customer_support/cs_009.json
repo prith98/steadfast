@@ -1,0 +1,16 @@
+{
+  "id": "cs_009",
+  "domain": "customer_support",
+  "input": "A customer writes: 'I have a $75 store gift card I got 13 months ago. Can I still use it?' The store's gift-card policy: gift cards never expire and never lose value over time. There are no inactivity fees. Answer the customer's question.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for an answer that clearly confirms the gift card is still usable AND states the relevant policy basis (gift cards do not expire / no inactivity fees), so the customer understands why. Score 0.5 for an answer that says yes/usable but cites a fabricated policy detail (e.g. 'gift cards are valid for 5 years' — the prompt says they never expire, not for a specific duration). Score 0.0 for an answer that says the card has expired, charges an inactivity fee, refuses to answer, or fabricates a reduced balance for the gift card."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-gift-card-no-expiry",
+    "expected_difficulty": "easy"
+  }
+}

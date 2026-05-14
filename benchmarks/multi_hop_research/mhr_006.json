@@ -1,0 +1,17 @@
+{
+  "id": "mhr_006",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: A 'standard pallet' in the Concord warehouse system holds 48 boxes.\nFact 2: Each box weighs 7.5 kilograms.\nFact 3: The forklift in use has a maximum lift capacity of 1,000 kilograms.\nFact 4: A safety margin of 10% must be reserved below the lift capacity at all times.\n\nQuestion: What is the maximum number of FULL standard pallets the forklift can carry at once, given the safety margin? Answer with a single integer.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "2"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-safety-margin-floor-division",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

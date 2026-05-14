@@ -1,0 +1,17 @@
+{
+  "id": "mhr_002",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: Project Aurora began on January 15, 2025 with a six-person engineering team.\nFact 2: The team doubled in size after the first six months, then grew by another 50% in the following quarter.\nFact 3: Two engineers left the team in the most recent month, and one new engineer joined the same month.\n\nQuestion: How many engineers are currently on Project Aurora? Answer with a single integer.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "17"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-3-hop-team-size-arithmetic",
+    "expected_difficulty": "medium",
+    "n_hops": 3
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "cr_007",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to return True iff a temperature reading in Celsius is within a normal human body-temperature range (36.1 to 37.2 inclusive). It currently returns True for values outside this range.\n\n```python\ndef is_normal_body_temp(c: float) -> bool:\n    return 36.1 <= c or c <= 37.2\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the function to (a) use logical AND instead of OR — either `36.1 <= c <= 37.2` (chained comparison) or `36.1 <= c and c <= 37.2` is correct, AND (b) preserves the function name and signature. Score 0.5 if the candidate flips OR to AND but accidentally narrows the bounds (e.g., uses strict `<` instead of `<=`), changing the inclusive contract. Score 0.0 for unchanged code, a refused answer, or a fix that introduces a new bug (e.g., flips the bounds to `37.2 <= c <= 36.1` which is never true)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-incorrect-boolean-operator",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Replace `or` with `and` (or use the chained comparison form 36.1 <= c <= 37.2)."
+  }
+}

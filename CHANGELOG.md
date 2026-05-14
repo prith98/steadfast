@@ -12,6 +12,58 @@ here.
 
 ### Added
 
+- **Benchmark expansion to 51 tasks across 3 domains** per ADR-0008.
+  Three domains at 17 tasks each (= ADR-0008 §A target):
+  customer_support extended from 5 to 17 tasks (5 pilots +
+  `cs_001.json` through `cs_012.json`); new `benchmarks/code_repair/`
+  directory with 17 tasks (`cr_001.json` through `cr_017.json`)
+  under the rubric-judged-diff contract from ADR-0008 §C (no
+  executable sandbox in v0.1, mirroring ADR-0007 §B's prompt-only
+  threat-model rationale); new `benchmarks/multi_hop_research/`
+  directory with 17 tasks (`mhr_001.json` through `mhr_017.json`)
+  under the self-contained-synthesized-prompts contract from
+  ADR-0008 §D (no live web/search tool fixture in v0.1). Per-domain
+  `_review.json` audit manifests per ADR-0008 §F gate the bank;
+  end state is 32 reviewed + 19 drafted across the three manifests
+  pending operator second-pass audit. Hard-task density is 2/17 =
+  11.8% per domain (above METHODOLOGY §3.4's 10% floor in each),
+  with diverse hard-task triggers across the 6 hard tasks
+  (`missing_information` on pilot_005 + cs_005 + mhr_007;
+  `contradictory_premises` / `under_specified` on cr_009 + cr_010 +
+  mhr_010).
+- **Per-domain audit-gate enforcement in `resolve_benchmark`** per
+  ADR-0008 §F. Bare-domain slugs (`customer_support`, `code_repair`,
+  `multi_hop_research`) now apply the `_review.json` manifest filter;
+  the `_pilot` slug bypasses the gate for back-compat with
+  weeks-1-3 invocations. Drafted tasks are filtered with a stderr
+  warning; an all-drafted directory fails loud per the existing
+  `load_safety_bank` / `load_distractor_bank` precedents
+  (ADR-0007 §G / ADR-0006 §C). New `BenchmarkAuditManifest` Pydantic
+  model exported from `steadfast.cli`. Glob exclusions for
+  manifest/metadata convention (`_*.json`), draft bank files
+  (`*.draft.json`), and frozen banks (`distractors_v*.json`,
+  `cases_v*.json`) so they don't leak into the task surface.
+- **METHODOLOGY §"Benchmark composition" subsection** linking
+  ADR-0008's per-domain contracts, judge mix targets, difficulty
+  distribution, and operator-audit gate. Plus two new
+  §"Known limitations" bullets covering code_repair's
+  rubric-judged-not-test-executed scope and multi_hop_research's
+  reasoning-only-not-retrieval-grounded scope.
+- **v0.1.x clarification fix: cost aggregation in safety summary**
+  (week-3 pilot v0.1.x backlog item 1 per `notes/tradeoffs_log.md`
+  P4 / ADR-0008 §G item 1). `SafetyCaseResult` carries a new
+  `cost_usd: Decimal | None` field; `SafetyDimension.total_cost_usd`
+  property aggregates across cases; `_summarize_safety_run` prints
+  the total. METHODOLOGY §"Versioning" clarification-fix exemption
+  applies; no metric semantic change.
+- **v0.1.x clarification fix: per-category catastrophic-rate
+  breakdown in HTML report** (week-3 pilot v0.1.x backlog item 2).
+  `_render_safety_section` now appends a "Catastrophic rate by harm
+  category" sub-table with Wilson 95% CI per (model, category) cell.
+  Surfaces the week-3 pilot's "data_destruction dominates failures"
+  finding from `notes/week3_findings.md` §"Finding 1" that's
+  currently buried in the per-case JSON. Pure presentation; data
+  already on `SafetyDimension.per_case`.
 - **Robustness dimension — contradiction handling sub-metric**
   (`docs/METHODOLOGY.md` §2.3 / ADR-0006 §D). Third robustness sub-metric;
   3-way categorical (`{detected, retried_or_escalated, hallucinated}`)

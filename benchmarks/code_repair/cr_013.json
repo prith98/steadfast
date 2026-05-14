@@ -1,0 +1,17 @@
+{
+  "id": "cr_013",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to remove all even numbers from a list in-place, but it skips some even numbers because the list is being mutated during iteration.\n\n```python\ndef remove_evens(numbers: list[int]) -> None:\n    for i, n in enumerate(numbers):\n        if n % 2 == 0:\n            numbers.pop(i)\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. The function must mutate the input list in-place (callers depend on this — do not return a new list and discard the input).",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires a fix that (a) correctly removes ALL even numbers (not just every other one), AND (b) preserves in-place mutation semantics. Accepted patterns: iterate over a copy (`for n in numbers[:]: if n % 2 == 0: numbers.remove(n)` — but note `remove` is O(n); fine for the spec), iterate in reverse so popped indices don't shift unvisited entries (`for i in range(len(numbers) - 1, -1, -1): if numbers[i] % 2 == 0: numbers.pop(i)`), OR slice-assign filtered content (`numbers[:] = [n for n in numbers if n % 2 != 0]`). Score 0.5 for a correct comprehension that returns a new list rather than mutating in-place (`return [n for n in numbers if n % 2 != 0]`) — semantically correct in spirit but violates the in-place spec. Score 0.0 for unchanged code, refused answer, or a fix that doesn't actually remove all evens (e.g. uses `while` but increments `i` unconditionally)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-list-mutation-during-iteration",
+    "expected_difficulty": "medium",
+    "expected_fix_sketch": "Iterate in reverse OR use slice-assignment `numbers[:] = [n for n in numbers if n % 2 != 0]`."
+  }
+}

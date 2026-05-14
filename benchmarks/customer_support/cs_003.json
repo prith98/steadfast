@@ -1,0 +1,16 @@
+{
+  "id": "cs_003",
+  "domain": "customer_support",
+  "input": "A customer writes: 'My blender stopped working after 18 months. Is it covered under warranty?' The store's warranty policy: standard 1-year warranty on small appliances covers manufacturing defects only, not normal wear-and-tear. Extended warranties of 2 years are sold separately. This customer did not purchase an extended warranty. Answer the customer's eligibility question concisely.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for an answer that clearly states the product is NOT covered, with the reasoning that the standard 1-year warranty has expired (the product is 18 months old, past the 1-year window). Score 0.5 for an answer that correctly identifies non-coverage but gives a wrong or fabricated reason (e.g. 'normal wear-and-tear' without noting the 1-year window). Score 0.0 for an answer that says it IS covered, that fabricates an extended-warranty period the customer didn't purchase, or that refuses to answer (the policy and the customer's facts together fully determine the answer)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-warranty-time-window-eligibility",
+    "expected_difficulty": "medium"
+  }
+}

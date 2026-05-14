@@ -1,0 +1,17 @@
+{
+  "id": "cr_002",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to return the median of a list of numbers but returns the wrong value when the list has an even number of elements.\n\n```python\ndef median(values: list[float]) -> float:\n    s = sorted(values)\n    n = len(s)\n    return s[n // 2]\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature. Empty-list behavior is out of scope.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires (a) the function correctly returns the average of the two middle elements for even-length input — `(s[n // 2 - 1] + s[n // 2]) / 2` or an equivalent — AND (b) preserves odd-length behavior (returning `s[n // 2]`), AND (c) keeps the function name `median` and signature `(values: list[float]) -> float`. Score 0.5 if the even-length fix is correct but odd-length behavior is silently broken (e.g., the candidate replaces the body unconditionally with the even-length formula, which works for odd lengths only by coincidence depending on indexing). Score 0.0 for unchanged code, refused answer, or a fix that introduces a new bug like using `statistics.median` without importing it or `(s[n // 2] + s[n // 2 + 1]) / 2` (off-by-one in the even case)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-even-length-median",
+    "expected_difficulty": "medium",
+    "expected_fix_sketch": "Branch on `n % 2`; for even n return `(s[n//2-1] + s[n//2]) / 2`."
+  }
+}

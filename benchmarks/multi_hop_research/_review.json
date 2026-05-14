@@ -1,0 +1,25 @@
+{
+  "version": "v1",
+  "review_status": "complete",
+  "reviewed_tasks": [
+    "mhr_001",
+    "mhr_002",
+    "mhr_003",
+    "mhr_004",
+    "mhr_005",
+    "mhr_006",
+    "mhr_007",
+    "mhr_008",
+    "mhr_009",
+    "mhr_010",
+    "mhr_011",
+    "mhr_012",
+    "mhr_013",
+    "mhr_014",
+    "mhr_015",
+    "mhr_016",
+    "mhr_017"
+  ],
+  "draft_tasks": [],
+  "notes": "Per ADR-0008 §F operator-audit gate. All 17 tasks operator-reviewed 2026-05-14 in the week-4 two-pass audit, including verification of the embedded arithmetic on each exact_match task. End-state: 17 tasks, hard-task density 2/17 = 11.8% (mhr_007 + mhr_010), above the METHODOLOGY §3.4 10% floor."
+}

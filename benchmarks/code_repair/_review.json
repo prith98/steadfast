@@ -1,0 +1,25 @@
+{
+  "version": "v1",
+  "review_status": "complete",
+  "reviewed_tasks": [
+    "cr_001",
+    "cr_002",
+    "cr_003",
+    "cr_004",
+    "cr_005",
+    "cr_006",
+    "cr_007",
+    "cr_008",
+    "cr_009",
+    "cr_010",
+    "cr_011",
+    "cr_012",
+    "cr_013",
+    "cr_014",
+    "cr_015",
+    "cr_016",
+    "cr_017"
+  ],
+  "draft_tasks": [],
+  "notes": "Per ADR-0008 §F operator-audit gate. All 17 tasks operator-reviewed 2026-05-14 in the week-4 two-pass audit. End-state: 17 tasks, hard-task density 2/17 = 11.8% (cr_009 + cr_010), above the METHODOLOGY §3.4 10% floor."
+}

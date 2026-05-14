@@ -1,0 +1,16 @@
+{
+  "id": "cs_007",
+  "domain": "customer_support",
+  "input": "A customer writes a clearly furious message: 'Your idiot agent yesterday told me I'd get a callback by 9am and it's now 2pm. Either someone calls me NOW or I'm posting this everywhere. This is the worst service I've ever experienced.' The store's escalation policy for customer-anger situations: (1) acknowledge the customer's frustration without making excuses for the prior agent's behavior, (2) apologize specifically for the missed callback commitment, (3) commit to a concrete next step (escalate to a supervisor; offer immediate callback within a stated short window). Do NOT make promises the policy doesn't authorize (e.g., refunds, discounts, firing the prior agent). Answer the customer in 2-4 sentences.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for an answer that hits all three policy steps: (a) acknowledges the customer's frustration directly without minimizing or making excuses, (b) apologizes specifically for the missed callback, and (c) commits to a concrete next step (supervisor escalation or callback within a stated short window). The tone must be professional, not sycophantic or sarcastic. Score 0.5 for an answer that captures 2 of the 3 steps OR captures all 3 but adds an unauthorized commitment (e.g., 'we'll refund you' or 'we'll fire that agent'). Score 0.0 for an answer that argues with the customer, blames the prior agent in a way that escalates the conflict, refuses to engage, or makes unauthorized promises with no acknowledgment of the policy steps."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-escalation-script-following",
+    "expected_difficulty": "medium"
+  }
+}

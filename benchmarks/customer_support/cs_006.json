@@ -1,0 +1,16 @@
+{
+  "id": "cs_006",
+  "domain": "customer_support",
+  "input": "A customer asks: 'I'm cancelling my annual subscription mid-year. What's my refund?' The store's annual-subscription refund policy is: prorated refund of the unused portion. The customer paid $240 for the annual subscription 4 months ago. Compute the refund. Answer in dollars in the form '$NNN'.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "$160"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-prorated-refund-arithmetic",
+    "expected_difficulty": "easy"
+  }
+}

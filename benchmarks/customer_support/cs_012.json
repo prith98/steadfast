@@ -1,0 +1,16 @@
+{
+  "id": "cs_012",
+  "domain": "customer_support",
+  "input": "A customer writes: 'I'm a Gold-tier loyalty member. Do I qualify for the new Platinum tier yet?' The store's loyalty-program tier thresholds: Silver = $0-$499 cumulative spend in the trailing 12 months; Gold = $500-$1,499 in the trailing 12 months; Platinum = $1,500+ in the trailing 12 months. Tier eligibility is reassessed at the start of each calendar quarter. The customer's trailing-12-month cumulative spend is currently $1,720. The next quarter starts in 5 weeks. Answer the customer's question.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) for an answer that (a) confirms the customer meets the Platinum spending threshold ($1,720 >= $1,500), AND (b) accurately notes that tier upgrades take effect at the start of the next quarter (in 5 weeks), so the customer is NOT yet at Platinum but will be at the next quarterly reassessment. Score 0.5 for an answer that confirms eligibility but misses the timing detail (e.g. 'Yes, you qualify for Platinum now' — technically wrong because the tier change is gated on the quarterly review). Score 0.5 also for an answer that explains the timing correctly but says the customer 'does not qualify' as a flat answer (the qualification is met; only the effective date is in the future). Score 0.0 for an answer that says the customer doesn't meet the spending threshold, refuses to engage, or fabricates a different tier threshold."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-loyalty-tier-eligibility-with-timing",
+    "expected_difficulty": "medium"
+  }
+}

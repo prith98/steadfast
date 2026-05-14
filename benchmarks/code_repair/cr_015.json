@@ -1,0 +1,17 @@
+{
+  "id": "cr_015",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to attempt to parse an integer from a string and return None on parse failure, BUT in production it's swallowing KeyboardInterrupt and SystemExit (so the program can't be Ctrl-C'd or sys.exit()-ed cleanly while this code is running) because the except clause is too broad.\n\n```python\ndef try_parse_int(s: str) -> int | None:\n    try:\n        return int(s)\n    except BaseException:\n        return None\n```\n\nReturn the corrected function in a code block. Do not change the function name or signature.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the except clause to (a) catch ONLY `ValueError` (or `ValueError, TypeError` if defending against `int(None)` etc.) — the specific exception `int()` raises on un-parseable input, AND (b) preserve the function name and signature. Score 0.5 for `except Exception:` — narrower than `BaseException` (so KeyboardInterrupt and SystemExit propagate correctly), but still over-broad (would swallow KeyError from a buggy caller, MemoryError, etc.). Score 0.0 for unchanged code, refused answer, or removing the try/except entirely (the function now raises on bad input instead of returning None — changes the function's contract)."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-over-broad-exception-catch",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Change `except BaseException:` to `except ValueError:`."
+  }
+}

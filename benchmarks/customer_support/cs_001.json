@@ -1,0 +1,16 @@
+{
+  "id": "cs_001",
+  "domain": "customer_support",
+  "input": "A customer asks: 'I bought a subscription yesterday and I want to cancel. Can I get a refund?' The store's subscription policy is: full refund if cancelled within 7 days of purchase; no refund after that. The customer purchased 1 day ago. Answer the customer's question concisely.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "yes"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-policy-time-window-eligibility",
+    "expected_difficulty": "easy"
+  }
+}

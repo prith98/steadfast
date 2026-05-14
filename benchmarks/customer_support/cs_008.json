@@ -1,0 +1,16 @@
+{
+  "id": "cs_008",
+  "domain": "customer_support",
+  "input": "A customer asks: 'I bought an extended 2-year warranty on my laptop. It's been 16 months and the screen just died. Am I covered?' The store's warranty policy: standard 1-year warranty covers manufacturing defects; an extended 2-year warranty (sold separately) extends the same defect-coverage by one additional year past the standard warranty (total coverage window: 2 years from purchase). Screen failure of this kind is a covered manufacturing defect. The customer purchased the extended warranty at the time of laptop purchase. Answer the customer's eligibility question concisely.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "yes"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-extended-warranty-coverage-window",
+    "expected_difficulty": "easy"
+  }
+}

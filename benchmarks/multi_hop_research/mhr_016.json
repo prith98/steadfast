@@ -1,0 +1,17 @@
+{
+  "id": "mhr_016",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The combustion of methane in oxygen follows the balanced equation: CH4 + 2 O2 → CO2 + 2 H2O.\nFact 2: One mole of any gas at standard temperature and pressure (STP) occupies 22.4 liters.\nFact 3: In a specific experiment, 5 moles of methane were combusted completely with sufficient oxygen at STP.\n\nQuestion: What volume of CO2 (at STP, in liters) is produced by this combustion? Answer in liters in the form 'NNN L' (e.g., '500 L').",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "112 L"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-stoichiometry-with-molar-volume",
+    "expected_difficulty": "medium",
+    "n_hops": 2
+  }
+}

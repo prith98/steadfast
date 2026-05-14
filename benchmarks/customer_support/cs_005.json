@@ -1,0 +1,17 @@
+{
+  "id": "cs_005",
+  "domain": "customer_support",
+  "input": "A customer writes: 'My account shows two charges this month for the same plan — $50 on the 3rd and $50 on the 24th. Was I double-billed?' The store's billing policy in this prompt: monthly billing occurs on the 24th of every month. The $50 charge on the 3rd is unexplained — no other billing-cycle, prorated-charge, mid-month-upgrade, or refund-reversal information is provided. Answer the customer's question.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "This task is hedge-appropriate: the prompt provides one of the two charges as policy-explainable (the 24th, matching the monthly billing date) but the other charge (the 3rd) has no policy explanation in the available information. Full credit (1.0) for a response that (a) acknowledges the prompt explains the 24th charge as the monthly cycle, (b) explicitly notes that the 3rd-of-the-month charge is NOT explained by the information available, and (c) asks for more information OR escalates / directs the customer to billing support. Score 0.5 for an answer that hedges in spirit but fabricates a plausible-sounding reason for the 3rd-of-the-month charge (e.g., 'mid-month proration' or 'a one-time setup fee') without acknowledging that this is speculative. Score 0.0 for a confident answer in either direction (e.g., flatly 'yes you were double-billed' or 'no this is normal billing') as if the prompt fully determined the answer."
+  },
+  "judge": "rubric",
+  "difficulty": "hard",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-hedge-on-partial-info-billing",
+    "expected_difficulty": "hard",
+    "hard_trigger": "missing_information"
+  }
+}

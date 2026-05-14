@@ -1,0 +1,17 @@
+{
+  "id": "mhr_003",
+  "domain": "multi_hop_research",
+  "input": "Combine the following facts to answer the question.\n\nFact 1: The Apex 7 satellite launched in February 2023.\nFact 2: Apex 7 was the third satellite launched by the Beacon space-services company.\nFact 3: Beacon's first satellite launched 19 months before Apex 7.\nFact 4: Beacon's second satellite launched 4 months after the first.\n\nQuestion: In what month and year did Beacon's second satellite launch? Answer in the form 'Month YYYY' (e.g., 'March 2024').",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "November 2021"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "mhr-temporal-chain-launch-dates",
+    "expected_difficulty": "medium",
+    "n_hops": 2
+  }
+}

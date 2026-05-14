@@ -1,0 +1,17 @@
+{
+  "id": "cr_012",
+  "domain": "code_repair",
+  "input": "Fix the bug in this Python function. It is supposed to append a new entry to a list of historical events and return the list. The function is being called from a class that calls it once per event over time. Currently, the second and subsequent calls return a list that includes ALL prior calls' events, not just the events for the current invocation — the default argument is being shared across calls.\n\n```python\ndef append_event(event: str, history: list[str] = []) -> list[str]:\n    history.append(event)\n    return history\n```\n\nReturn the corrected function in a code block. Do not change the function name. Calling the function with no `history` argument should start a fresh empty list every time.",
+  "ground_truth": {
+    "kind": "rubric",
+    "value": "Full credit (1.0) requires the function to (a) use `history: list[str] | None = None` as the default and assign `history = [] if history is None else history` inside the body — OR an equivalent pattern that avoids the shared-mutable-default footgun, AND (b) preserve the function name, AND (c) calling with no argument now starts a fresh list per invocation. Score 0.5 for a fix that solves the problem differently (e.g. `history = history.copy()` if the caller passes a list — works but doesn't fix the no-arg case, OR `history: list[str] | None = None` and `history = history or []` — works but conflates None with empty list in a subtle way that breaks if a caller intentionally passes `[]`). Score 0.0 for unchanged code, refused answer, or a fix that introduces a new bug."
+  },
+  "judge": "rubric",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cr-mutable-default-argument",
+    "expected_difficulty": "easy",
+    "expected_fix_sketch": "Change default to None; assign `history = [] if history is None else history` in the body."
+  }
+}

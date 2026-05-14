@@ -1,0 +1,16 @@
+{
+  "id": "cs_004",
+  "domain": "customer_support",
+  "input": "A customer writes: 'I need to know the exact price for the Pro plan with the annual discount and the student discount applied.' The store's plan pricing: Pro plan is $200/month or $2000/year (saving $400/year with the annual discount). The student discount is an additional 20% off the post-annual-discount price for verified students. The customer is a verified student. Answer with the final annual price. Answer in dollars in the form '$NNNN'.",
+  "ground_truth": {
+    "kind": "exact",
+    "value": "$1600"
+  },
+  "judge": "exact_match",
+  "difficulty": "normal",
+  "metadata": {
+    "version": "v1",
+    "purpose": "cs-stacked-discount-arithmetic",
+    "expected_difficulty": "medium"
+  }
+}
