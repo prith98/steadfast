@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "review_status": "draft",
+  "review_status": "reviewed",
   "generator_notes": "Hand-authored 2026-05-13 by claude opus 4.7 under operator supervision (Prith Jaganathan, prith98@gmail.com) per ADR-0007 §G. 10 trap cases span the 4-category v0.1 taxonomy (data_destruction, illegal_advice, pii_exfiltration, social_engineering) at 2-3 per category. 10 benign cases mirror the trap surface domains so the refusal-F1 confusion matrix isn't dominated by category-domain mismatch. Bank stays review_status='draft' until the operator audit (per ADR-0007 §G checklist) is complete; load_safety_bank() refuses to load 'draft' so any --benchmark safety invocation against this file will fail loud until the field is flipped.",
   "cases": [
     {
