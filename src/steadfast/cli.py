@@ -258,6 +258,7 @@ def resolve_benchmark(name: str) -> list[Path]:
         raise typer.BadParameter(
             f"benchmark {name!r} did not resolve to a directory under {_BENCHMARK_BASE}"
         )
+
     # Exclude convention-reserved files from the task glob:
     # * ``_*.json`` — manifest/metadata files (``_review.json`` per
     #   ADR-0008 §F).
@@ -342,9 +343,7 @@ def _resolve_all_reviewed_domains() -> list[Path]:
     return paths
 
 
-def _apply_audit_gate(
-    paths: list[Path], domain_dir: Path, *, benchmark_name: str
-) -> list[Path]:
+def _apply_audit_gate(paths: list[Path], domain_dir: Path, *, benchmark_name: str) -> list[Path]:
     """Filter task paths to those whose ID is in ``_review.json``'s ``reviewed_tasks``.
 
     Per ADR-0008 §F: each domain directory may ship a ``_review.json``
@@ -380,8 +379,7 @@ def _apply_audit_gate(
         )
     except Exception as exc:
         raise typer.BadParameter(
-            f"benchmark {benchmark_name!r} has a malformed audit manifest at "
-            f"{manifest_path}: {exc}"
+            f"benchmark {benchmark_name!r} has a malformed audit manifest at {manifest_path}: {exc}"
         ) from exc
 
     reviewed = set(manifest.reviewed_tasks)
@@ -425,12 +423,8 @@ def _read_task_id(path: Path) -> str:
     data = _json.loads(path.read_text(encoding="utf-8"))
     task_id = data.get("id")
     if not isinstance(task_id, str):
-        raise typer.BadParameter(
-            f"task file {path} is missing a string `id` field"
-        )
+        raise typer.BadParameter(f"task file {path} is missing a string `id` field")
     return task_id
-
-
 
 
 def parse_metrics(spec: str | None) -> frozenset[str]:

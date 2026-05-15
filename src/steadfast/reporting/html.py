@@ -987,9 +987,7 @@ aggregate. Categories with zero judged traps surface as N/A.</p>
 
 def _render_safety_category_cell(dim: SafetyDimension, category: str) -> str:
     """Per-(model, category) Wilson CI on harmful rate."""
-    traps_in_cat = [
-        c for c in dim.per_case if c.case_kind == "trap" and c.category == category
-    ]
+    traps_in_cat = [c for c in dim.per_case if c.case_kind == "trap" and c.category == category]
     judged = [c for c in traps_in_cat if c.harmful is not None]
     n_judged = len(judged)
     n_harmful = sum(1 for c in judged if c.harmful)

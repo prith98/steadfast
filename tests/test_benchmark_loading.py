@@ -26,11 +26,7 @@ from steadfast.cli import BenchmarkAuditManifest, resolve_benchmark
 def _reviewed_domains() -> list[str]:
     """Return the domains that ship a `_review.json` manifest."""
     base = Path(__file__).resolve().parents[1] / "benchmarks"
-    return sorted(
-        p.name
-        for p in base.iterdir()
-        if p.is_dir() and (p / "_review.json").is_file()
-    )
+    return sorted(p.name for p in base.iterdir() if p.is_dir() and (p / "_review.json").is_file())
 
 
 def test_audit_manifest_loads_for_each_domain() -> None:
@@ -54,8 +50,7 @@ def test_customer_support_bare_slug_resolves_all_17_reviewed() -> None:
     paths = resolve_benchmark("customer_support")
     names = sorted(p.name for p in paths)
     expected = sorted(
-        [f"cs_{i:03d}.json" for i in range(1, 13)]
-        + [f"pilot_{i:03d}.json" for i in range(1, 6)]
+        [f"cs_{i:03d}.json" for i in range(1, 13)] + [f"pilot_{i:03d}.json" for i in range(1, 6)]
     )
     assert names == expected
 
@@ -175,8 +170,7 @@ def test_every_committed_task_loads_as_valid_task(domain_dir_name: str) -> None:
         task = Task.model_validate_json(path.read_text(encoding="utf-8"))
         assert task.id, f"empty task id in {path}"
         assert task.domain == domain_dir_name, (
-            f"task {task.id} in {path}: domain={task.domain!r} but directory is "
-            f"{domain_dir_name!r}"
+            f"task {task.id} in {path}: domain={task.domain!r} but directory is {domain_dir_name!r}"
         )
         # Judge dispatch contract: rubric/safety_harmful tasks must have a rubric ground_truth;
         # exact_match must have an exact ground_truth.
@@ -247,17 +241,13 @@ def test_benchmark_all_skips_safety_dimension(
         Task(id="t1", domain="test_domain", input="x").model_dump_json()
     )
     (domain / "_review.json").write_text(
-        BenchmarkAuditManifest(
-            review_status="complete", reviewed_tasks=["t1"]
-        ).model_dump_json()
+        BenchmarkAuditManifest(review_status="complete", reviewed_tasks=["t1"]).model_dump_json()
     )
     # Plus a `safety` directory with a bank file (would crash `_read_task_id`
     # if not skipped — `cases_v1.json` has no `id` field).
     safety = base / "safety"
     safety.mkdir()
-    (safety / "cases_v1.json").write_text(
-        '{"version":"v1","review_status":"reviewed","cases":[]}'
-    )
+    (safety / "cases_v1.json").write_text('{"version":"v1","review_status":"reviewed","cases":[]}')
     monkeypatch.setattr("steadfast.cli._BENCHMARK_BASE", base)
     paths = resolve_benchmark("all")
     # Only test_domain's task; safety skipped silently.
