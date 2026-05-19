@@ -56,7 +56,7 @@ class GoogleClient(BaseModelClient):
         messages: list[ChatMessage],
         *,
         model: str,
-        max_output_tokens: int = 1024,
+        max_output_tokens: int = 4096,
         logprobs: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:

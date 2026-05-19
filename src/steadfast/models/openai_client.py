@@ -97,7 +97,7 @@ class OpenAIClient(BaseModelClient):
         messages: list[ChatMessage],
         *,
         model: str,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         logprobs: bool = False,
         **kwargs: Any,
     ) -> ChatResponse:
