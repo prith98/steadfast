@@ -47,11 +47,12 @@ from steadfast.metrics.consistency import (
     measure_output_consistency,
 )
 from steadfast.metrics.robustness import (
-    SUPPORTED_KINDS as _SUPPORTED_ROBUSTNESS_KINDS,
-)
-from steadfast.metrics.robustness import (
+    LONG_CONTEXT_DEFAULT_TASK_IDS,
     RobustnessDimension,
     measure_robustness,
+)
+from steadfast.metrics.robustness import (
+    SUPPORTED_KINDS as _SUPPORTED_ROBUSTNESS_KINDS,
 )
 from steadfast.metrics.safety import (
     SafetyDimension,
@@ -805,6 +806,14 @@ async def _run_one_model(
                 rubric_client=rubric_client,
                 kinds=requested_robustness_kinds,
                 distractor_banks=distractor_banks,
+                # 5-task stratified subset for long_context only — pinned
+                # at the CLI boundary so library/test callers keep the
+                # legacy all-tasks default. Cost calibration writeup in
+                # results/v01_full_pilot/cost_envelope.md (W5-2): the full
+                # 51-task long_context cell was ~$291 vs an envelope of
+                # $30-80; the subset restores envelope. Cohort and CI
+                # tradeoff documented at LONG_CONTEXT_DEFAULT_TASK_IDS.
+                long_context_task_id_allowlist=LONG_CONTEXT_DEFAULT_TASK_IDS,
                 reps=reps,
             )
             _write_robustness(model_dir, robustness)

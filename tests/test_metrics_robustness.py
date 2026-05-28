@@ -20,6 +20,7 @@ from steadfast.agent import Agent, AgentResponse, GroundTruth, Task, ToolCall
 from steadfast.judges.base import Verdict
 from steadfast.metrics.robustness import (
     DEFAULT_LONG_CONTEXT_LENGTHS,
+    LONG_CONTEXT_DEFAULT_TASK_IDS,
     SUPPORTED_KINDS,
     ContradictionResult,
     LongContextResult,
@@ -1384,6 +1385,80 @@ def test_measure_robustness_bundles_long_context() -> None:
     # 4k passes (under threshold), 64k fails (over threshold).
     assert sub.success_rates[0] == pytest.approx(1.0)
     assert sub.success_rates[1] == pytest.approx(0.0)
+
+
+def test_long_context_default_task_ids_is_the_pinned_5() -> None:
+    """The CLI-pinned cohort is the stratified 5-task subset (W5-2)."""
+    # Use ``set(...)`` on the left to keep this out of SIM300's Yoda heuristic
+    # (which flags ALL_CAPS Final names as the "constant" side); the
+    # equality is set-on-set either way.
+    assert set(LONG_CONTEXT_DEFAULT_TASK_IDS) == {
+        "cs_001",
+        "cs_002",
+        "cr_001",
+        "cr_002",
+        "mhr_001",
+    }
+
+
+def test_measure_robustness_long_context_allowlist_filters_tasks() -> None:
+    """``long_context_task_id_allowlist`` shrinks the long_context arm only.
+
+    Per ``LONG_CONTEXT_DEFAULT_TASK_IDS`` docstring + W5-2 in
+    ``notes/tradeoffs_log.md``: long-context input cost is dominated by
+    the fixed-size filler tiers, so running the cell on 5 tasks instead
+    of 51 drops that dimension's cost ~10x. The CLI passes this filter
+    explicitly; the library default (``None``) preserves the legacy
+    all-tasks behavior verified by
+    ``test_measure_robustness_bundles_long_context``.
+    """
+    in_subset = _exact_task("cs_001", ground_truth="GROUND_TRUTH", input_text="Q please")
+    out_of_subset = _exact_task(
+        "cs_999_outside_allowlist", ground_truth="GROUND_TRUTH", input_text="Q please"
+    )
+    clean_in = _make_clean_run_result(in_subset, passes=[True] * 2)
+    clean_out = _make_clean_run_result(out_of_subset, passes=[True] * 2)
+    agent = _LengthGatedAgent(fail_above_tokens=30_000, ground_truth="GROUND_TRUTH")
+    dim = asyncio.run(
+        measure_robustness(
+            model="m",
+            tasks=[in_subset, out_of_subset],
+            clean_run_results=[clean_in, clean_out],
+            agent=agent,
+            rubric_client=None,
+            kinds=["long_context"],
+            reps=2,
+            long_context_lengths=[4_000, 64_000],
+            long_context_task_id_allowlist=frozenset({"cs_001"}),
+            aggregate_seed=0,
+        )
+    )
+    # Only the in-subset task contributed; n_tasks tracks that.
+    sub = dim.sub_metrics["long_context"]
+    assert isinstance(sub, LongContextResult)
+    assert sub.n_tasks == 1
+
+
+def test_measure_robustness_long_context_allowlist_empty_intersection_raises() -> None:
+    """An allowlist that intersects no task fails loud — almost always a config bug."""
+    task = _exact_task("only_task", ground_truth="GROUND_TRUTH", input_text="Q please")
+    clean = _make_clean_run_result(task, passes=[True] * 2)
+    agent = _LengthGatedAgent(fail_above_tokens=30_000, ground_truth="GROUND_TRUTH")
+    with pytest.raises(ValueError, match="filtered out every task"):
+        asyncio.run(
+            measure_robustness(
+                model="m",
+                tasks=[task],
+                clean_run_results=[clean],
+                agent=agent,
+                rubric_client=None,
+                kinds=["long_context"],
+                reps=2,
+                long_context_lengths=[4_000, 64_000],
+                long_context_task_id_allowlist=frozenset({"not_in_tasks"}),
+                aggregate_seed=0,
+            )
+        )
 
 
 def test_long_context_result_roundtrips_through_json() -> None:

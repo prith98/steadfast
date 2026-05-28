@@ -108,6 +108,31 @@ SUPPORTED_KINDS: Final[frozenset[str]] = frozenset(
 # x-axis points under the sigmoid fit.
 DEFAULT_LONG_CONTEXT_LENGTHS: Final[tuple[int, ...]] = (4_000, 16_000, 64_000, 128_000)
 
+# Stratified 5-task allowlist applied by the CLI when running long_context
+# on the full ``--benchmark all`` set. Pinned by ID rather than algorithmic
+# sampling so the cohort is auditable and the manifest can record it
+# verbatim. Rationale + cost calibration writeup in
+# ``notes/tradeoffs_log.md`` W5-2 and ``results/v01_full_pilot/cost_envelope.md``.
+#
+# Long-context input cost scales linearly with task count (per-task input
+# tokens are dominated by the fixed-size filler tiers, not by task text),
+# so running the full 51-task set on the 4 k / 16 k / 64 k / 128 k ladder
+# at N=10 reps x 2 models prices at ~$291 -- ~10x the envelope. The 5-task
+# stratified subset prices at ~$29, restoring the envelope.
+#
+# The CI tradeoff is documented in METHODOLOGY §"Known limitations":
+# per-tier Wilson CIs still pool ``N_reps x 5 = 50`` trials per tier, but
+# the task-level bootstrap CIs on sigmoid slope and L_50 are wider at
+# n_tasks=5 than they would be at n_tasks=51. The library API
+# (``measure_robustness`` / ``measure_long_context_degradation``) leaves
+# the allowlist opt-in (default ``None`` = use all tasks); the CLI
+# (``src/steadfast/cli.py``) passes this constant explicitly when
+# invoking ``measure_robustness`` so library/test callers retain the
+# legacy all-tasks behavior.
+LONG_CONTEXT_DEFAULT_TASK_IDS: Final[frozenset[str]] = frozenset(
+    {"cs_001", "cs_002", "cr_001", "cr_002", "mhr_001"}
+)
+
 # Three-way categorical labels per ADR-0006 §D. Decision rules in the
 # classifier are evaluated in this priority order: detected wins over
 # retried_or_escalated wins over hallucinated.
@@ -1523,6 +1548,7 @@ async def measure_robustness(
     distractor_banks: dict[str, DistractorBank] | None = None,
     long_context_filler_path: str | Path = LONG_CONTEXT_DEFAULT_FILLER_PATH,
     long_context_lengths: Sequence[int] = DEFAULT_LONG_CONTEXT_LENGTHS,
+    long_context_task_id_allowlist: frozenset[str] | None = None,
     reps: int = 10,
     aggregate_seed: int = 0,
 ) -> RobustnessDimension:
@@ -1534,6 +1560,14 @@ async def measure_robustness(
     consume ``clean_run_results`` (contradiction is a 3-way categorical
     per ADR-0006 §D; long_context is an absolute curve per ADR-0006 §E);
     the dispatch threads only the inputs each kind needs.
+
+    ``long_context_task_id_allowlist`` filters ``tasks`` for the
+    ``long_context`` branch only (other sub-metrics still see the full
+    set). ``None`` (default) preserves the legacy all-tasks behavior for
+    library / test callers. The CLI passes
+    :data:`LONG_CONTEXT_DEFAULT_TASK_IDS` explicitly to apply the 5-task
+    stratified subset; see that constant's docstring and
+    ``notes/tradeoffs_log.md`` W5-2 for the cost-vs-CI tradeoff.
     """
     requested = frozenset(kinds)
     unknown = requested - SUPPORTED_KINDS
@@ -1593,8 +1627,23 @@ async def measure_robustness(
         )
 
     if "long_context" in requested:
+        if long_context_task_id_allowlist is None:
+            lc_tasks: Sequence[Task] = tasks
+        else:
+            lc_tasks = [t for t in tasks if t.id in long_context_task_id_allowlist]
+            if not lc_tasks:
+                # Caller passed an allowlist that intersected nothing — fail
+                # loud rather than silently dropping the dimension. (Empty
+                # allowlist is almost certainly a configuration error; the
+                # legacy all-tasks behavior is reached via ``None``, not
+                # ``frozenset()``.)
+                raise ValueError(
+                    "long_context_task_id_allowlist filtered out every task; "
+                    f"allowlist={sorted(long_context_task_id_allowlist)} "
+                    f"task_ids={[t.id for t in tasks]}"
+                )
         sub_metrics["long_context"] = await measure_long_context_degradation(
-            tasks=tasks,
+            tasks=lc_tasks,
             agent=agent,
             rubric_client=rubric_client,
             reps=reps,
