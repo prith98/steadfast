@@ -95,7 +95,15 @@
           "confidence_level": 0.95
         }
       },
-      "consistency": null,
+      "consistency": {
+        "n_tasks": 50,
+        "mean_rubric_score": 0.885,
+        "min_rubric_score": 0.275,
+        "max_rubric_score": 1.0,
+        "mean_embedding_cosine": 0.8599418320871609,
+        "n_empty_answers": 0,
+        "n_paraphrases_total": 250
+      },
       "robustness": null,
       "safety": {
         "n_traps": 10,

@@ -15,6 +15,7 @@ export function ConsistencyTable({ rows, geminiAsteriskReason }: Props) {
           <th>model</th>
           <th>mean rubric score ↑</th>
           <th>min / max per task</th>
+          <th>mean embedding cosine ↑</th>
           <th>n empty / n paraphrases</th>
           <th>n tasks</th>
         </tr>
@@ -27,7 +28,7 @@ export function ConsistencyTable({ rows, geminiAsteriskReason }: Props) {
             return (
               <tr key={r.model_id}>
                 <td className="model">{r.model_id}</td>
-                <td className="metric muted" colSpan={4}>
+                <td className="metric muted" colSpan={5}>
                   not run
                 </td>
               </tr>
@@ -43,6 +44,7 @@ export function ConsistencyTable({ rows, geminiAsteriskReason }: Props) {
               <td className="metric">
                 {num(c.min_rubric_score, 3)} / {num(c.max_rubric_score, 3)}
               </td>
+              <td className="metric">{num(c.mean_embedding_cosine, 3)}</td>
               <td className="metric">
                 {c.n_empty_answers} / {c.n_paraphrases_total}
               </td>

@@ -38,6 +38,7 @@ export type Consistency = {
   mean_rubric_score: number;
   min_rubric_score: number;
   max_rubric_score: number;
+  mean_embedding_cosine: number;
   n_empty_answers: number;
   n_paraphrases_total: number;
 };

@@ -61,35 +61,40 @@ def _calibration(model: str) -> dict[str, Any] | None:
 
 
 def _consistency(model: str) -> dict[str, Any] | None:
-    """Aggregate per-task consistency files into a model-level cell."""
+    """Aggregate per-task consistency files into a model-level cell.
+
+    Per-task schema is OutputConsistencyResult: mean_rubric +
+    mean_embedding_cosine + n_empty_answers + k (paraphrase count;
+    pinned to 5 per METHODOLOGY §1.1). The model-level cell shows the
+    cross-task mean of mean_rubric and its min/max envelope; tasks where
+    the paraphrase validator failed write no file (per the Finding 3
+    ParaphraseError fix in commit e2fc043), so n_tasks reflects only
+    successfully-measured tasks.
+    """
     model_dir = PILOT_DIR / model
     if not model_dir.exists():
         return None
     files = sorted(model_dir.glob("consistency_*.json"))
     if not files:
         return None
-    scores: list[float] = []
+    rubric_scores: list[float] = []
+    cosine_scores: list[float] = []
     n_empty_total = 0
-    n_total = 0
+    n_paraphrases_total = 0
     for fp in files:
         d = json.loads(fp.read_text())
-        # Each per-task consistency JSON exposes a mean rubric score
-        # (rubric_mean.point_estimate) and n_empty_answers count.
-        rm = d.get("rubric_mean") or {}
-        pt = rm.get("point_estimate")
-        if pt is not None:
-            scores.append(pt)
+        rubric_scores.append(float(d["mean_rubric"]))
+        cosine_scores.append(float(d["mean_embedding_cosine"]))
         n_empty_total += int(d.get("n_empty_answers", 0))
-        n_total += int(d.get("n_paraphrases_total", 0) or d.get("n_total", 0))
-    if not scores:
-        return None
+        n_paraphrases_total += int(d.get("k", 0))
     return {
-        "n_tasks": len(scores),
-        "mean_rubric_score": sum(scores) / len(scores),
-        "min_rubric_score": min(scores),
-        "max_rubric_score": max(scores),
+        "n_tasks": len(rubric_scores),
+        "mean_rubric_score": sum(rubric_scores) / len(rubric_scores),
+        "min_rubric_score": min(rubric_scores),
+        "max_rubric_score": max(rubric_scores),
+        "mean_embedding_cosine": sum(cosine_scores) / len(cosine_scores),
         "n_empty_answers": n_empty_total,
-        "n_paraphrases_total": n_total,
+        "n_paraphrases_total": n_paraphrases_total,
     }
 
 
