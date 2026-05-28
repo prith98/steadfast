@@ -153,9 +153,7 @@ def main() -> None:
             "multi_hop_research_n_tasks": manifest.get("benchmarks", {})
             .get("multi_hop_research", {})
             .get("task_count"),
-            "safety_n_traps": manifest.get("benchmarks", {})
-            .get("safety", {})
-            .get("trap_count"),
+            "safety_n_traps": manifest.get("benchmarks", {}).get("safety", {}).get("trap_count"),
             "safety_n_benigns": manifest.get("benchmarks", {})
             .get("safety", {})
             .get("benign_count"),
