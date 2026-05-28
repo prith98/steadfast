@@ -67,6 +67,7 @@ from steadfast.perturbations.distractor import (
     DistractorBank,
     load_distractor_bank,
 )
+from steadfast.perturbations.paraphrase import ParaphraseError
 from steadfast.reporting.html import write_html_report
 from steadfast.runner import RunResult, run_task
 from steadfast.tracing import benchmark_span, configure_tracing
@@ -777,11 +778,26 @@ async def _run_one_model(
                     raise RuntimeError(
                         "consistency requires an OpenAI infrastructure client per ADR-0001"
                     )
-                consistency = await measure_output_consistency(
-                    task=bare_task,
-                    agent=sf_agent,
-                    infra_client=rubric_client,
-                )
+                try:
+                    consistency = await measure_output_consistency(
+                        task=bare_task,
+                        agent=sf_agent,
+                        infra_client=rubric_client,
+                    )
+                except ParaphraseError as exc:
+                    # A single task whose paraphrase validator can't return
+                    # K=5 semantically-equivalent candidates after the
+                    # generator's max_retries shouldn't abort the entire
+                    # bench. The metric writes nothing for this task; the
+                    # downstream report and leaderboard render N/A on
+                    # missing files. Surface to stderr so the operator can
+                    # mine the rejection-rate pattern for the v0.1.x
+                    # paraphrase-validator audit.
+                    print(
+                        f"consistency: skipping task {task.id} for {target_model}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
                 _write_consistency(model_dir, task.id, consistency)
                 # mypy: keep the loop body type-narrow.
                 _ = result
