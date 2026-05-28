@@ -25,11 +25,14 @@ export function ConsistencyTable({ rows, geminiAsteriskReason }: Props) {
           const c = r.consistency;
           const gemini = r.model_id === "gemini-2.5-pro";
           if (!c) {
+            const msg = gemini
+              ? "rate-limited mid-pilot (Google daily-quota window); v0.1.x re-run queued"
+              : "not run";
             return (
               <tr key={r.model_id}>
                 <td className="model">{r.model_id}</td>
                 <td className="metric muted" colSpan={5}>
-                  not run
+                  {msg}
                 </td>
               </tr>
             );

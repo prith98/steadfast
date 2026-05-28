@@ -71,8 +71,22 @@ export function RobustnessTable({ rows }: Props) {
           const typo = sub["typo"];
           const distractor = sub["distractor"];
           const lc = sub["long_context"];
-          const opusLongContextSkip =
-            r.model_id === "claude-opus-4-7" && !lc;
+          const opus = r.model_id === "claude-opus-4-7";
+          const gemini = r.model_id === "gemini-2.5-pro";
+          const opusLongContextSkip = opus && !lc;
+          // Gemini with no robustness data at all = rate-limited
+          // mid-pilot per the consistency-run quota incident; document
+          // inline rather than rendering blank N/A cells.
+          if (gemini && !r.robustness) {
+            return (
+              <tr key={r.model_id}>
+                <td className="model">{r.model_id}</td>
+                <td className="metric muted" colSpan={4}>
+                  rate-limited mid-pilot (Google daily-quota window); v0.1.x re-run queued
+                </td>
+              </tr>
+            );
+          }
           const typoC = deltaCell(typo);
           const distC = deltaCell(distractor);
           const slopeC = slopeCell(lc);
