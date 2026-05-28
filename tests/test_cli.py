@@ -14,10 +14,15 @@ import typer
 from steadfast.agent import Task
 from steadfast.cli import (
     _apply_confidence_suffix,
+    _write_robustness,
     parse_metrics,
     parse_models,
     parse_robustness_types,
     resolve_benchmark,
+)
+from steadfast.metrics.robustness import (
+    RobustnessDimension,
+    RobustnessSubMetricResult,
 )
 
 # ---------------------------------------------------------------------------
@@ -182,3 +187,77 @@ def test_pilot_tasks_have_ground_truth() -> None:
     for task in tasks:
         assert task.ground_truth is not None, f"task {task.id} missing ground_truth"
         assert task.ground_truth.value, f"task {task.id} has empty ground_truth.value"
+
+
+# ---------------------------------------------------------------------------
+# _write_robustness merge semantics
+# ---------------------------------------------------------------------------
+
+
+def _make_sub_metric(
+    kind: str,
+    delta: float,
+    n_tasks: int = 5,
+) -> RobustnessSubMetricResult:
+    return RobustnessSubMetricResult(
+        kind=kind,  # type: ignore[arg-type]
+        n_tasks=n_tasks,
+        clean_mean=1.0,
+        perturbed_mean=1.0 + delta,
+        delta=delta,
+        delta_ci_lower=delta - 0.05,
+        delta_ci_upper=delta + 0.05,
+        confidence_level=0.95,
+        method="BCa",
+        n_resamples=10000,
+        per_task=[],
+    )
+
+
+def test_write_robustness_merges_with_existing_file(tmp_path) -> None:
+    """Multi-pass dispatches (W5-2 typo+distractor + long_context split)
+    must accumulate sub-metrics across runs, not clobber prior ones."""
+    model_dir = tmp_path / "gpt-5.2"
+    model_dir.mkdir()
+    # First run: typo + distractor (Day-3 W5-2 dispatch)
+    first = RobustnessDimension(
+        model="gpt-5.2",
+        n_tasks=51,
+        sub_metrics={
+            "typo": _make_sub_metric("typo", -0.02, n_tasks=51),
+            "distractor": _make_sub_metric("distractor", -0.01, n_tasks=17),
+        },
+    )
+    _write_robustness(model_dir, first)
+    # Second run: long_context only (Day-4 W5-2 dispatch); should NOT
+    # erase typo/distractor written on Day 3. Empty sub_metrics dict
+    # mirrors the long-context-on-Opus-only path where the only kind
+    # requested is long_context, which produces a ContradictionResult/
+    # LongContextResult separately — here we want to assert that an
+    # empty new payload still preserves the existing keys.
+    second = RobustnessDimension(model="gpt-5.2", n_tasks=5, sub_metrics={})
+    _write_robustness(model_dir, second)
+    written = RobustnessDimension.model_validate_json((model_dir / "robustness.json").read_text())
+    assert set(written.sub_metrics.keys()) == {"typo", "distractor"}
+    # n_tasks is the max across passes (51 from Day-3, 5 from Day-4).
+    assert written.n_tasks == 51
+
+
+def test_write_robustness_overwrites_same_keyed_sub_metric(tmp_path) -> None:
+    """An explicit re-run for the same kind should refresh stale data."""
+    model_dir = tmp_path / "gpt-5.2"
+    model_dir.mkdir()
+    stale = RobustnessDimension(
+        model="gpt-5.2",
+        n_tasks=51,
+        sub_metrics={"typo": _make_sub_metric("typo", -0.5, n_tasks=51)},
+    )
+    _write_robustness(model_dir, stale)
+    fresh = RobustnessDimension(
+        model="gpt-5.2",
+        n_tasks=51,
+        sub_metrics={"typo": _make_sub_metric("typo", -0.02, n_tasks=51)},
+    )
+    _write_robustness(model_dir, fresh)
+    written = RobustnessDimension.model_validate_json((model_dir / "robustness.json").read_text())
+    assert written.sub_metrics["typo"].delta == -0.02  # type: ignore[union-attr]

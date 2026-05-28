@@ -885,9 +885,36 @@ def _write_calibration(model_dir: Path, result: CalibrationDimension) -> None:
 
 
 def _write_robustness(model_dir: Path, result: RobustnessDimension) -> None:
-    """Write the per-model robustness JSON to ``<model_dir>/robustness.json``."""
+    """Write the per-model robustness JSON to ``<model_dir>/robustness.json``.
+
+    Merges with any existing ``robustness.json`` so multi-pass dispatches
+    (e.g., W5-2's split of typo+distractor on Day 3 from long_context on
+    Day 4 — see ``results/v01_full_pilot/manifest.json`` §`commands`)
+    accumulate sub-metrics instead of clobbering them. Sub-metrics in
+    ``result`` win on key collision so an explicit re-run can refresh
+    stale data without manual cleanup; sub-metrics only present in the
+    existing file are preserved. ``model`` is taken from ``result``; the
+    top-level ``n_tasks`` is the max across the two dimensions since
+    different kinds run on different cohorts (long_context is a 5-task
+    subset per :data:`LONG_CONTEXT_DEFAULT_TASK_IDS`).
+    """
     path = model_dir / "robustness.json"
-    path.write_text(result.model_dump_json(indent=2))
+    merged_sub_metrics = dict(result.sub_metrics)
+    merged_n_tasks = result.n_tasks
+    if path.exists():
+        existing = RobustnessDimension.model_validate_json(path.read_text())
+        # Existing sub-metrics not present in this run are preserved as-is;
+        # new sub-metrics overwrite same-keyed existing ones.
+        for kind, sub in existing.sub_metrics.items():
+            if kind not in merged_sub_metrics:
+                merged_sub_metrics[kind] = sub
+        merged_n_tasks = max(merged_n_tasks, existing.n_tasks)
+    merged = RobustnessDimension(
+        model=result.model,
+        n_tasks=merged_n_tasks,
+        sub_metrics=merged_sub_metrics,
+    )
+    path.write_text(merged.model_dump_json(indent=2))
 
 
 def _write_safety(model_dir: Path, result: SafetyDimension) -> None:
